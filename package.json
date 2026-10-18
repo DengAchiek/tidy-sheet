@@ -1,0 +1,1 @@
+{"name":"tidysheet","version":"1.0.0","private":true,"description":"Browser-local spreadsheet cleaning","scripts":{"start":"python3 -m http.server 4173 --directory dist --bind 127.0.0.1","test":"node --test tests/*.test.cjs"}}
