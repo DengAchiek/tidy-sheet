@@ -1,0 +1,47 @@
+'use strict';
+(()=>{
+  const $=id=>document.getElementById(id),message=$('mlMessage');if(!message)return;
+  let worker,sequence=0,pending=new Map(),loaded=null,busy=false,hasResult=false;
+  const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function notify(text,error=false){message.textContent=text;message.className='notice '+(error?'error':'success');message.hidden=false;}
+  function init(){worker=new Worker('/assets/ml-worker.js?v=2.1.0');worker.onmessage=({data})=>{const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(Error(data.error)):p.resolve(data.result);};worker.onerror=()=>{for(const p of pending.values())p.reject(Error('The processing worker stopped. Try a smaller dataset.'));pending.clear();};}init();
+  function call(action,args={}){return new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});worker.postMessage({id,action,...args});});}
+  function lock(value){busy=value;document.querySelectorAll('#mlUpload button,#mlUpload select,#mlUpload input,#mlWorkspace button,#mlWorkspace select,#mlWorkspace input').forEach(el=>el.disabled=value);}
+  async function work(fn){if(busy)return;lock(true);try{await fn();}catch(e){notify(e.message,true);}finally{lock(false);}}
+  async function authorize(record=false){
+    const response=await fetch(record?'/api/usage/clean':'/api/session',record?{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),mode:'training',rows:loaded.rows,columns:loaded.headers.length})}:{credentials:'same-origin',cache:'no-store'});
+    const value=await response.json();if(!response.ok||(!record&&!value.access?.training))throw Error(value.message||'Premium or an active trial is required. Open your account to continue.');
+  }
+  function table(headers,rows){$('mlPreview').innerHTML='<thead><tr>'+headers.map(h=>'<th>'+escape(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(v=>'<td title="'+escape(v)+'">'+escape(String(v).slice(0,160))+'</td>').join('')+'</tr>').join('')+'</tbody>';}
+  function invalidate(){hasResult=false;$('mlResult').hidden=true;}
+  const taskHelp={classification:'Use a labelled table. Target labels are preserved.',regression:'Choose a numeric target. Invalid or missing targets are removed, never guessed.',unsupervised:'Prepare features without a target, or optionally keep a label for later evaluation.',text:'Text is preserved for your tokenizer. Structured numeric and categorical features can also be prepared.',time_series:'Use an ISO date/time column and a numeric target. The latest observations go to evaluation splits.',annotations:'Use an annotation table with image/audio paths and labels. Set paths to Text to keep them. Raw media files are processed in your own pipeline.'};
+  function taskChanged(){const task=$('mlTask').value;$('mlTaskHelp').textContent=taskHelp[task];$('mlDuplicates').checked=task!=='time_series';$('mlSplit').value=task==='classification'?'stratified':task==='time_series'?'chronological':'random';if(['text','annotations'].includes(task)){$('mlEncoding').value='preserve';$('mlScaling').value='none';}splitChanged();invalidate();}
+  function splitChanged(){$('mlTimeField').hidden=$('mlSplit').value!=='chronological';$('mlGroupField').hidden=$('mlSplit').value!=='group';}
+  function render(data){
+    loaded=data;invalidate();$('mlWorkspace').hidden=false;$('mlDrop').hidden=true;$('mlSample').hidden=true;
+    $('mlFileTitle').textContent=data.files.map(f=>f.name).join(' + ');$('mlDimensions').textContent=data.rows.toLocaleString()+' rows · '+data.headers.length+' columns · '+data.files.length+' dataset(s)';
+    const options='<option value="-1">None / choose a column</option>'+data.headers.map((h,i)=>'<option value="'+i+'">'+escape(h)+'</option>').join('');['mlTarget','mlTime','mlGroup'].forEach(id=>$(id).innerHTML=options);
+    const target=data.headers.findIndex(h=>/^(target|label|class|outcome|y)$/i.test(h));$('mlTarget').value=String(target);
+    $('mlColumns').innerHTML=data.profile.map(c=>'<tr><td>'+escape(c.name)+'</td><td><select data-role="'+c.index+'" aria-label="Feature role for '+escape(c.name)+'">'+['numeric','categorical','text','ignore'].map(role=>'<option value="'+role+'" '+(c.suggested===role?'selected':'')+'>'+role[0].toUpperCase()+role.slice(1)+'</option>').join('')+'</select></td><td>'+c.missing+' ('+c.missingPercent+'%)</td><td>'+c.unique+'</td><td>'+escape(c.examples.join(' · ').slice(0,120))+'</td></tr>').join('');
+    $('mlSheets').innerHTML=data.files.map((f,i)=>f.sheets.length?'<label class="field">'+escape(f.name)+' worksheet<select data-sheet="'+i+'">'+f.sheets.map(s=>'<option '+(s===f.sheet?'selected':'')+'>'+escape(s)+'</option>').join('')+'</select></label>':'').join('');
+    $('mlPreviewTitle').textContent='Source preview';table(data.headers,data.preview);notify('Datasets loaded locally. Confirm the target and feature roles.'+(data.warnings.length?' '+data.warnings.join(' '):''));
+  }
+  async function load(files){await authorize();notify('Reading datasets on your device…');render(await call('load',{files,union:$('mlUnion').checked}));}
+  $('mlBrowse').onclick=()=>$('mlFiles').click();$('mlFiles').onchange=()=>{const files=Array.from($('mlFiles').files);if(files.length)work(()=>load(files));};
+  $('mlDrop').ondragover=e=>{e.preventDefault();$('mlDrop').classList.add('dragging');};$('mlDrop').ondragleave=()=>$('mlDrop').classList.remove('dragging');$('mlDrop').ondrop=e=>{e.preventDefault();$('mlDrop').classList.remove('dragging');if(e.dataTransfer.files.length)work(()=>load(Array.from(e.dataTransfer.files)));};
+  $('mlSample').onclick=()=>work(async()=>{const rows=['record_id,age,income,segment,label'];for(let i=0;i<80;i++)rows.push([i+1,i%11===0?'':20+i%45,15000+i*420,i%3===0?'retail':'business',i%2?'retained':'churned'].join(','));await load([new File([rows.join('\n')],'training_sample.csv',{type:'text/csv'})]);});
+  $('mlTask').onchange=taskChanged;$('mlSplit').onchange=()=>{splitChanged();invalidate();};
+  $('mlUnion').onchange=()=>{if(loaded)work(async()=>render(await call('load',{union:$('mlUnion').checked,sheets:loaded.files.map(f=>f.sheet)})));};
+  $('mlSheets').onchange=e=>{if(e.target.matches('[data-sheet]'))work(async()=>{const sheets=loaded.files.map(f=>f.sheet);sheets[Number(e.target.dataset.sheet)]=e.target.value;render(await call('load',{union:$('mlUnion').checked,sheets}));});};
+  $('mlWorkspace').addEventListener('change',e=>{if(e.target.id!=='mlSafeCSV')invalidate();});
+  $('mlReset').onclick=()=>{worker.terminate();init();loaded=null;hasResult=false;$('mlFiles').value='';$('mlWorkspace').hidden=true;$('mlDrop').hidden=false;$('mlSample').hidden=false;message.hidden=true;};
+  $('mlPrepare').onclick=()=>work(async()=>{
+    invalidate();await authorize();notify('Splitting and fitting preprocessing on training rows…');const config={task:$('mlTask').value,target:Number($('mlTarget').value),roles:Array.from(document.querySelectorAll('[data-role]')).map(s=>s.value),splitMethod:$('mlSplit').value,timeColumn:Number($('mlTime').value),groupColumn:Number($('mlGroup').value),validation:Number($('mlValidation').value)/100,test:Number($('mlTest').value)/100,seed:Number($('mlSeed').value),missingTokens:$('mlMissing').value.split(',').map(s=>s.trim()).filter(Boolean),numericMissing:$('mlNumeric').value,categoricalMissing:$('mlCategorical').value,encoding:$('mlEncoding').value,scaling:$('mlScaling').value,trim:$('mlTrim').checked,removeDuplicates:$('mlDuplicates').checked,dropConstant:$('mlConstant').checked};
+    const result=await call('prepare',{config});await authorize(true);hasResult=true;$('mlResult').hidden=false;$('mlPreviewTitle').textContent='Prepared training preview';table(result.headers,result.preview);
+    $('mlStats').innerHTML=Object.entries(result.counts).map(([key,n])=>'<div class="stat"><span class="stat-label">'+escape(key)+'</span><strong>'+n.toLocaleString()+'</strong><span class="stat-detail">rows</span></div>').join('')+'<div class="stat green"><span class="stat-label">Output columns</span><strong>'+result.headers.length+'</strong></div>';
+    const r=result.report;$('mlSummary').textContent=r.outputRows.toLocaleString()+' of '+r.inputRows.toLocaleString()+' rows retained · '+r.duplicatesRemoved+' duplicates removed · '+r.missingTargetsRemoved+' missing targets · '+r.invalidTargetsRemoved+' invalid targets · '+r.invalidNumericCells+' invalid numeric cells treated as missing · '+r.imputedCells+' values imputed · '+r.droppedFeatures.length+' constant features dropped.';
+    $('mlWarnings').innerHTML=r.warnings.map(w=>'<li>'+escape(w)+'</li>').join('');notify('Your datasets are ready. Review the preview and report before exporting.');$('mlResult').scrollIntoView({behavior:'smooth',block:'center'});
+  });
+  async function download(format){if(!hasResult)throw Error('Prepare the dataset with your current settings first.');await authorize();const out=await call('export',{format,safeCSV:$('mlSafeCSV').checked}),url=URL.createObjectURL(new Blob([out.content],{type:out.mime})),link=document.createElement('a');link.href=url;link.download=out.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);notify('Export created on your device.');}
+  $('mlZip').onclick=()=>work(()=>download('zip'));$('mlJSONL').onclick=()=>work(()=>download('jsonl'));taskChanged();
+})();

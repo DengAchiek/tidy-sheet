@@ -1,6 +1,17 @@
 'use strict';
 (() => {
   const $=id=>document.getElementById(id), C=window.TidyCore, PAGE_SIZE=50;
+  const session=JSON.parse(document.getElementById('tidysheet-session')?.textContent||'{"sampleOnly":true}');
+  const sampleOnly=session.sampleOnly===true;
+  async function authorize(rows,columns){
+    if(sampleOnly)return;
+    const response=await fetch('/api/usage/clean',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),rows,columns})});
+    const data=await response.json();if(!response.ok)throw Error(data.message||'Sign in and check your subscription to continue.');
+  }
+  async function authorizeDownload(){
+    if(sampleOnly)return true;
+    try{const r=await fetch('/api/session',{credentials:'same-origin',cache:'no-store'}),s=await r.json();if(!r.ok||!s.access?.allowed)throw Error('Your access has ended. Open Account & billing to continue.');return true;}catch(e){message(e.message);return false;}
+  }
   const SAMPLE=`Customer Name,Phone,Email,Signup Date,Amount,Customer ID\n  john   kamau ,0712345678,John.Kamau@Gmail.com,05/03/2024,"KES 12,500",00127\nJOHN KAMAU,+254 712 345 678,john.kamau@gmail.com,2024-03-05,12500,00127\nmary WANJIRU,0722-111-222,mary.w@@yahoo.com,12 Jan 2024,Ksh 3400,00128\n,,,,,\npeter otieno,254733987654,peter@otieno.co.ke,31/02/2024,N/A,00129\nAisha  mohamed,0110 123 456,aisha@mail,3 Feb 2024,"8,000",00130\nBrian O'neil,12345,brian@corp.com,15-07-2024,950.50,00131\nGrace Njeri,0799888777,grace@example.com,2024-06-20,"KES 4,250.00",00132`;
   let worker=null, workbookReady=false, sequence=0, pending=new Map(), busy=false, currentFile=null, matrix=[], sheets=[], model=null, original=null, result=null, types=[], keys=[], edits=[], view='original', page=0, activeIssue=null, searchTimer;
   const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -14,7 +25,7 @@
       if(data.progress!==undefined){$('busyText').textContent='Standardizing your spreadsheet… '+data.progress+'%';return;}
       pending.delete(data.id);data.error?job.reject(Error(data.error)):job.resolve(data.result);
     };
-    worker.onerror=()=>{const error=Error('The processing worker could not start. Reload the page, or run the local version with npm start.');for(const p of pending.values())p.reject(error);pending.clear();worker.terminate();worker=null;};
+    worker.onerror=()=>{const error=Error('The cleaner could not start. Reload the page and try again.');for(const p of pending.values())p.reject(error);pending.clear();worker.terminate();worker=null;};
     return worker;
   }
   function request(action,payload={}){return new Promise((resolve,reject)=>{try{const id=++sequence;pending.set(id,{resolve,reject});ensureWorker().postMessage({id,action,...payload});}catch(e){pending.delete(sequence);reject(e);}});}
@@ -42,8 +53,9 @@
     $('settingsHint').textContent='Your original file stays untouched.';$('resultSummary').textContent='Confirm the column types, then clean your spreadsheet.';
     $('search').value='';$('rowFilter').value='all';updateKeys();renderStats();renderTable();
   }
-  async function importFile(file){
+  async function importFile(file,isSample=false){
     if(busy)return;
+    if(sampleOnly&&!isSample){message('The free sample uses sample data only. Get Premium to clean your own files.');return;}
     if(!/\.(csv|tsv|xlsx|xls)$/i.test(file.name)){message('Choose a CSV, TSV, XLSX, or XLS file.');return;}
     if(file.size>C.LIMITS.bytes){message('This file is over 20 MB. Split it into smaller files.');return;}
     message('');setBusy(true,'Opening your spreadsheet…');workbookReady=false;
@@ -61,6 +73,7 @@
   async function runClean(){
     if(busy||!model)return;message('');setBusy(true,'Standardizing your spreadsheet…');
     try{
+      await authorize(model.rows.length,model.headers.length);
       result=await request('clean',{model,config:config()});result.audit.unshift(...edits);
       $('tabCleaned').disabled=false;$('tabIssues').disabled=false;$('issueCount').textContent=result.issues.length?'('+fmt(result.issues.length)+')':'';
       $('exportPanel').hidden=false;$('exportNote').hidden=false;$('settingsHint').textContent='All set. You can adjust the rules and clean again.';
@@ -116,7 +129,7 @@
   function download(blob,suffix){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=currentFile.name.replace(/\.[^.]+$/,'')+suffix;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
   function csvDownload(rows,suffix){download(new Blob([C.toCSV(rows)],{type:'text/csv;charset=utf-8'}),suffix);}
   $('browse').onclick=()=>$('file').click();$('file').onchange=e=>{if(e.target.files[0])importFile(e.target.files[0]);};
-  $('sample').onclick=()=>importFile(new File([SAMPLE],'sample_customers.csv',{type:'text/csv'}));
+  $('sample').onclick=()=>importFile(new File([SAMPLE],'sample_customers.csv',{type:'text/csv'}),true);
   $('drop').ondragover=e=>{e.preventDefault();if(!busy)$('drop').classList.add('dragging');};
   $('drop').ondragleave=()=>$('drop').classList.remove('dragging');
   $('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('dragging');if(e.dataTransfer.files.length>1){message('Choose one file at a time.');return;}if(e.dataTransfer.files[0])importFile(e.dataTransfer.files[0]);};
@@ -137,10 +150,10 @@
   ['original','cleaned','issues'].forEach(v=>$('tab'+v[0].toUpperCase()+v.slice(1)).onclick=()=>{view=v;page=0;renderTable();});
   $('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page=0;renderTable();},160);};
   $('rowFilter').onchange=()=>{page=0;renderTable();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};
-  $('downloadCsv').onclick=()=>{if(result)csvDownload([model.headers,...result.rows],'_cleaned.csv');};
-  $('downloadLog').onclick=()=>{if(!result)return;const entries=result.audit.length?result.audit:[{row:'',column:'',original:'',cleaned:'',issue:'No changes or issues found',action:'No change'}];csvDownload([['Source row','Column','Original value','Cleaned value','Detail','Action'],...entries.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action])],'_change_log.csv');};
+  $('downloadCsv').onclick=async()=>{if(result&&await authorizeDownload())csvDownload([model.headers,...result.rows],'_cleaned.csv');};
+  $('downloadLog').onclick=async()=>{if(!result||!await authorizeDownload())return;const entries=result.audit.length?result.audit:[{row:'',column:'',original:'',cleaned:'',issue:'No changes or issues found',action:'No change'}];csvDownload([['Source row','Column','Original value','Cleaned value','Detail','Action'],...entries.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action])],'_change_log.csv');};
   $('downloadXlsx').onclick=async()=>{
-    if(!result||busy)return;message('');setBusy(true,'Preparing your Excel download…');
+    if(!result||busy||!await authorizeDownload())return;message('');setBusy(true,'Preparing your Excel download…');
     try{const buffer=await request('xlsx',{headers:model.headers,result,types});download(new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'_cleaned.xlsx');}
     catch(e){if(e.message!=='Cancelled')message(e.message);}
     finally{setBusy(false);}
@@ -175,5 +188,6 @@
   // No storage is used. Warn only when a tab contains manual corrections.
   window.addEventListener('beforeunload',e=>{if(edits.length){e.preventDefault();e.returnValue='';}});
   if(location.protocol==='file:')message('For local use, open this project with npm start and visit http://127.0.0.1:4173. Browser workers require an HTTP server.');
-  else if(new URLSearchParams(location.search).has('sample'))$('sample').click();
+  else if(sampleOnly||new URLSearchParams(location.search).has('sample'))$('sample').click();
+  if(sampleOnly){$('browse').hidden=true;$('newFile').onclick=()=>location.assign('/account');$('newFile').textContent='Use my own file ↗';}
 })();

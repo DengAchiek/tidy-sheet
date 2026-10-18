@@ -3,13 +3,13 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const path=require('node:path');
 const vm=require('node:vm');
-const X=require('../dist/assets/vendor/xlsx.full.min.js');
+const X=require('../public/assets/vendor/xlsx.full.min.js');
 function harness(){
   let resolve,reject;
   const ctx=vm.createContext({console,File,Blob,TextEncoder,TextDecoder,Date,ArrayBuffer,Uint8Array,Uint16Array,Int32Array,setTimeout,clearTimeout});
   ctx.self=ctx;ctx.postMessage=message=>{if(message.progress!==undefined)return;message.error?reject(Error(message.error)):resolve(message.result);};
-  ctx.importScripts=(...scripts)=>scripts.forEach(s=>vm.runInContext(fs.readFileSync(path.join(__dirname,'../dist/assets',s),'utf8'),ctx));
-  vm.runInContext(fs.readFileSync(path.join(__dirname,'../dist/assets/worker.js'),'utf8'),ctx);
+  ctx.importScripts=(...scripts)=>scripts.forEach(s=>vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/assets',s),'utf8'),ctx));
+  vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/assets/worker.js'),'utf8'),ctx);
   return (action,payload)=>new Promise((res,rej)=>{resolve=res;reject=rej;ctx.onmessage({data:{id:1,action,...payload}});});
 }
 function book(){
@@ -33,7 +33,7 @@ test('Actual worker imports legacy XLS',async()=>{
 });
 test('Actual worker cleans and exports a workbook with a real summary and review sheet',async()=>{
   const request=harness();const parsed=await request('import',{file:new File([fs.readFileSync(path.join(__dirname,'fixtures/multi-sheet.xlsx'))],'multi-sheet.xlsx')});
-  const C=require('../dist/assets/core.js'),model=C.prepare(parsed.matrix),types=model.headers.map(C.guess);
+  const C=require('../public/assets/core.js'),model=C.prepare(parsed.matrix),types=model.headers.map(C.guess);
   const result=await request('clean',{model,config:{types,keys:[],trim:true,titleCase:true,nulls:true,removeEmpty:true,removeDuplicates:true,caseInsensitive:true,dateOrder:'DMY'}});
   assert.equal(result.stats.output,1);assert.equal(result.stats.duplicates,1);
   const buffer=await request('xlsx',{headers:model.headers,result,types});const wb=X.read(buffer,{type:'array'});
@@ -42,7 +42,7 @@ test('Actual worker cleans and exports a workbook with a real summary and review
 test('Source row numbers remain correct for an Excel range beginning below row one',async()=>{
   const wb=X.utils.book_new(),ws={A1:{t:'s',v:'ID'},A5:{t:'s',v:'001'},'!ref':'A1:A5'};X.utils.book_append_sheet(wb,ws,'Data');
   const parsed=await harness()('import',{file:new File([X.write(wb,{type:'array',bookType:'xlsx'})],'offset.xlsx')});
-  const C=require('../dist/assets/core.js'),model=C.prepare(parsed.matrix);assert.equal(model.sourceRows[3],5);assert.equal(model.rows[3][0],'001');
+  const C=require('../public/assets/core.js'),model=C.prepare(parsed.matrix);assert.equal(model.sourceRows[3],5);assert.equal(model.rows[3][0],'001');
 });
 test('Malformed CSV errors propagate out of the processing worker',async()=>{
   await assert.rejects(harness()('import',{file:new File(['A\n"unclosed'],'bad.csv')}),/unclosed/);

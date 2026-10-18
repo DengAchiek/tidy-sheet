@@ -1,7 +1,7 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const C=require('../dist/assets/core.js');
-const X=require('../dist/assets/vendor/xlsx.full.min.js');
+const C=require('../public/assets/core.js');
+const X=require('../public/assets/vendor/xlsx.full.min.js');
 const defaults={trim:true,nulls:true,titleCase:true,removeEmpty:true,removeDuplicates:true,caseInsensitive:true,dateOrder:'DMY',dropInvalid:false};
 const run=(matrix,extra={})=>{const model=C.prepare(matrix);return C.clean(model,{...defaults,types:model.headers.map(C.guess),...extra});};
 test('CSV: escaped quotes, embedded newline, BOM, CRLF and final newline',()=>{
