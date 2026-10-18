@@ -1,13 +1,14 @@
 # TidySheet
 
-A simple, private spreadsheet cleaner with a landing page and a separate cleaning workspace. The navbar stays visible while scrolling. The originals in the parent folder remain available for reference.
+A simple, private spreadsheet cleaner with a landing page and a separate cleaning workspace. The navbar stays visible while scrolling.
 
 ## Run locally
 
-Requires Node.js (for tests) and Python 3 (for the local server). No package installation or API key is required.
+Requires Python 3 for the local server and Node.js 20 or later for the npm commands and tests. No package installation or API key is required.
 
 ```sh
-cd /Users/dengachiek/Downloads/files/tidysheet
+git clone https://github.com/DengAchiek/tidy-sheet.git
+cd tidy-sheet
 npm start
 ```
 
