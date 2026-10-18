@@ -6,3 +6,12 @@
 /* Keep wide spreadsheets inside their own scroll region at every breakpoint. */
 .workspace-grid>*{min-width:0}.column-config{min-width:0}.table-wrap{width:100%;min-width:0}
 @media(max-width:800px){.workspace-grid{grid-template-columns:minmax(0,1fr)}}
+/* Keep the tool navigation visible without covering the workspace controls. */
+html{scroll-padding-top:96px}
+.site-nav{position:sticky;top:0;z-index:50;background:var(--paper)}
+.app-intro{margin:42px auto 24px}
+.app-intro h1{font-size:36px;margin:0 0 12px}
+.upload-panel{margin-bottom:46px}
+.drop-zone{min-height:230px}
+@media(min-width:1100px){.settings-sticky{top:92px}}
+@media(max-width:520px){.app-intro{margin-top:32px}.app-intro h1{font-size:30px}}

@@ -73,7 +73,7 @@
   }
   function renderStats(){
     const s=result?.stats;
-    const stats=s?[['Rows kept',s.output,fmt(s.input)+' rows imported',''],['Values standardized',s.changed,'Across all input rows','green'],['Duplicates removed',s.duplicates,'First matching record kept',''],['Rows to review',s.review,'Retained rows with invalid cells',s.review?'alert':'']]:[['Imported rows',model.rows.length,'Ready for a fresh start',''],['Columns',model.headers.length,'Confirm each column type',''],['Duplicate matching',keys.filter(Boolean).length,keys.some(Boolean)?'Selected key columns':'Comparing the whole row',''],['Status','Ready','Choose rules, then clean','green']];
+    const stats=s?[['Rows kept',s.output,fmt(s.input)+' rows imported',''],['Values standardized',s.changed,'Across all input rows','green'],['Duplicates removed',s.duplicates,'First matching record kept',''],['Rows to review',s.review,'Retained rows with invalid cells',s.review?'alert':'']]:[['Imported rows',model.rows.length,'Ready to clean',''],['Columns',model.headers.length,'Confirm each column type',''],['Duplicate matching',keys.filter(Boolean).length,keys.some(Boolean)?'Selected key columns':'Comparing the whole row',''],['Status','Ready','Choose rules, then clean','green']];
     $('stats').innerHTML=stats.map(([label,n,detail,cls])=>`<div class="stat ${cls}"><span class="stat-label">${esc(label)}</span><strong>${typeof n==='number'?fmt(n):n}</strong><span class="stat-detail">${esc(detail)}</span></div>`).join('');
   }
   function filteredRows(){
@@ -90,7 +90,7 @@
   function renderTable(){
     if(!model)return;
     ['Original','Cleaned','Issues'].forEach(v=>$('tab'+v).setAttribute('aria-pressed',String(view===v.toLowerCase())));
-    $('previewTitle').textContent=view==='issues'?'A few things to look at':view==='cleaned'?'A fresh look at your data':'Your data, at a glance';
+    $('previewTitle').textContent=view==='issues'?'Issues to review':view==='cleaned'?'Cleaned data':'Preview';
     $('rowFilter').disabled=view==='original';$('rowFilter').querySelector('[value="changed"]').disabled=view==='issues';
     if(view==='issues'&&$('rowFilter').value==='changed')$('rowFilter').value='all';
     $('legend').hidden=view!=='cleaned';
