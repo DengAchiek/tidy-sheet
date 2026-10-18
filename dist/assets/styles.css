@@ -15,3 +15,8 @@ html{scroll-padding-top:96px}
 .drop-zone{min-height:230px}
 @media(min-width:1100px){.settings-sticky{top:92px}}
 @media(max-width:520px){.app-intro{margin-top:32px}.app-intro h1{font-size:30px}}
+/* A short overview replaces the six-card feature section on the landing page. */
+.simple-overview{max-width:760px;margin:0 auto;padding:52px 20px;text-align:center}
+.simple-overview h2{font-size:clamp(23px,3vw,30px);margin:0 0 12px}
+.simple-overview p{font-size:15px;color:var(--muted);line-height:1.75;margin:0}
+@media(max-width:520px){.simple-overview{padding:36px 0}}

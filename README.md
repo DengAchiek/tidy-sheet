@@ -1,6 +1,6 @@
 # TidySheet
 
-A simple, private spreadsheet cleaner. The home page opens directly to the tool; the navbar stays visible while scrolling. The originals in the parent folder remain available for reference.
+A simple, private spreadsheet cleaner with a landing page and a separate cleaning workspace. The navbar stays visible while scrolling. The originals in the parent folder remain available for reference.
 
 ## Run locally
 
@@ -42,8 +42,8 @@ Open http://127.0.0.1:4173. Use an HTTP server rather than opening the HTML as a
 
 ## Files
 
-- `dist/index.html`: cleaner home page
-- `dist/sheet-cleaner.html`: compatible cleaner entry point
+- `dist/index.html`: landing page with a compact feature overview
+- `dist/sheet-cleaner.html`: cleaning workspace
 - `dist/privacy.html`: data behavior and limits
 - `dist/assets/core.js`: pure parsing, validation, cleaning, and CSV export
 - `dist/assets/worker.js`: CSV/Excel imports, background cleaning, and Excel export
