@@ -26,4 +26,13 @@
 <footer class="site-footer"><span>© 2026 TidySheet · Product by Nexalix</span><div class="footer-links"><a href="privacy.html">Privacy & data</a></div></footer></div>
 <dialog id="editDialog" class="modal"><form id="editForm"><div class="eyebrow">A human touch</div><h2 style="margin-top:12px">Review this value</h2><p id="editContext"></p><p id="editReason"></p><label class="field">Corrected value<input id="editValue" type="text" autocomplete="off" required></label><p class="help">The corrected value will be checked again. This updates your workspace; your original file stays untouched.</p><div class="actions"><button id="closeDialog" class="btn secondary" type="button">Cancel</button><button class="btn" type="submit">Apply & check again</button></div></form></dialog>
 <dialog id="resetDialog" class="modal"><div class="eyebrow">Start fresh</div><h2 style="margin-top:12px">Clear this workspace?</h2><p>Your imported data, corrections, and results will be cleared from this tab. Download anything you want to keep first.</p><div class="actions"><button id="keepWorkspace" class="btn secondary" type="button">Keep working</button><button id="clearWorkspace" class="btn" type="button">Clear & start again</button></div></dialog>
+<dialog id="cleanSuccessDialog" class="modal success-modal" aria-labelledby="cleanSuccessTitle" aria-describedby="cleanSuccessMessage cleanSuccessSummary">
+  <form method="dialog">
+    <span class="success-icon" aria-hidden="true">✓</span>
+    <h2 id="cleanSuccessTitle">Cleaning successful!</h2>
+    <p id="cleanSuccessMessage">Your spreadsheet has been cleaned successfully.</p>
+    <p id="cleanSuccessSummary"></p>
+    <div class="actions"><button class="btn" type="submit" autofocus>View results</button></div>
+  </form>
+</dialog>
 </body></html>

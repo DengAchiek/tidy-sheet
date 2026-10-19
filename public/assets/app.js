@@ -81,6 +81,8 @@
       $('resultSummary').textContent=`${fmt(s.input)} input rows → ${fmt(s.output)} kept · ${fmt(s.duplicates)} duplicates, ${fmt(s.empty)} empty, ${fmt(s.dropped)} invalid rows removed. ${fmt(s.invalid)} invalid cells found across the input.`;
       $('reviewNotice').hidden=!s.review;$('reviewNotice').textContent=`${fmt(s.review)} retained ${s.review===1?'row needs':'rows need'} review. Open Issues to correct flagged values, then download your results.`;
       view='cleaned';page=0;$('rowFilter').value='all';$('search').value='';renderStats();renderTable();
+      $('cleanSuccessSummary').textContent=`${fmt(s.output)} ${s.output===1?'row is':'rows are'} ready to review and download.${s.review?` ${fmt(s.review)} ${s.review===1?'row still needs':'rows still need'} review in Issues.`:''}`;
+      $('cleanSuccessDialog').showModal();
     }catch(e){if(e.message!=='Cancelled')message(e.message);}
     finally{setBusy(false);}
   }

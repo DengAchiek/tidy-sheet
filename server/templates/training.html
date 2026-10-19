@@ -6,3 +6,11 @@
 <div class="ml-content"><section class="panel"><div class="panel-header"><h2>Columns & data quality</h2><p>Confirm feature roles. Exclude IDs and information that reveals the answer.</p></div><div class="table-wrap ml-profile"><table class="data-table"><thead><tr><th>Column</th><th>Feature role</th><th>Missing</th><th>Unique</th><th>Examples</th></tr></thead><tbody id="mlColumns"></tbody></table></div></section><section class="panel ml-preview"><div class="panel-header"><h2 id="mlPreviewTitle">Source preview</h2><p>First 10 rows. Files stay in this tab; refreshing clears your workspace.</p></div><div class="table-wrap"><table class="data-table" id="mlPreview"></table></div></section>
 <section id="mlResult" class="panel ml-results" hidden><h2>Your prepared datasets</h2><div id="mlStats" class="stats"></div><p id="mlSummary" class="result-summary"></p><ul id="mlWarnings" class="ml-warnings"></ul><div class="actions"><button id="mlZip" class="btn" type="button">Download dataset bundle ↘</button><button id="mlJSONL" class="btn secondary" type="button">Training JSONL ↘</button></div><label class="checkbox-label"><input id="mlSafeCSV" type="checkbox">Escape formula-like text in bundle CSVs for spreadsheet viewing</label><p class="help">Bundle includes CSV and JSONL for all splits, preprocessing settings fitted on training data, column profile, quality report, and source-row mapping. JSONL preserves exact text and numeric types. CSV escaping adds an apostrophe to some text values; keep it off for model input. Open unescaped CSVs through your data pipeline.</p></section></div></div></section>
 <noscript><p class="notice">Enable JavaScript to prepare datasets locally.</p></noscript>
+<dialog id="mlSuccessDialog" class="modal success-modal" aria-labelledby="mlSuccessTitle" aria-describedby="mlSuccessMessage">
+  <form method="dialog">
+    <span class="success-icon" aria-hidden="true">✓</span>
+    <h2 id="mlSuccessTitle">Dataset preparation successful!</h2>
+    <p id="mlSuccessMessage">Your training datasets are ready. Review the preview and report before exporting.</p>
+    <div class="actions"><button class="btn" type="submit" autofocus>View results</button></div>
+  </form>
+</dialog>
