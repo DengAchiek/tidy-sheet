@@ -36,6 +36,13 @@
       "when": 1792438167004,
       "tag": "0004_high_the_order",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792446341646,
+      "tag": "0005_outstanding_excalibur",
+      "breakpoints": true
     }
   ]
 }

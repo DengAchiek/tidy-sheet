@@ -51,6 +51,11 @@ export const administrators=sqliteTable('administrators',{
 export const adminInviteClaims=sqliteTable('admin_invite_claims',{
   inviteHash:text('invite_hash').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),createdAt:integer('created_at').notNull(),
 });
+export const adminInvitations=sqliteTable('admin_invitations',{
+  tokenHash:text('token_hash').primaryKey(),sourceHash:text('source_hash').notNull(),email:text('email').notNull(),
+  expiresAt:integer('expires_at').notNull(),createdAt:integer('created_at').notNull(),
+  usedBy:text('used_by').references(()=>accounts.id),usedAt:integer('used_at'),
+},t=>[uniqueIndex('admin_invitation_source').on(t.sourceHash)]);
 export const siteEvents=sqliteTable('site_events',{
   id:text('id').primaryKey(),visitorId:text('visitor_id'),userId:text('user_id').references(()=>accounts.id),
   kind:text('kind').notNull(),path:text('path').notNull(),sample:integer('sample').notNull().default(0),

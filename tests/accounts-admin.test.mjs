@@ -92,3 +92,41 @@ test('A private admin invitation requires the intended email and code, is consum
  assert.equal((await h.route(req('/api/admin/claim',{code},cookie))).status,200);assert.equal((await h.route(req('/api/admin/overview',undefined,cookie))).status,200);
  await h.store.run('DELETE FROM administrators');assert.equal((await h.route(req('/api/admin/claim',{code},cookie))).status,409);assert.equal((await h.route(req('/api/admin/overview',undefined,cookie))).status,403);
 });
+async function issue(h){const code='3'.repeat(40);h.env.ADMIN_INVITE_EMAIL=fixture.email;h.env.ADMIN_INVITE_HASH=h.auth.digest(code);const response=await h.route(req('/api/admin/invitations/create',{code}));assert.equal(response.status,200,await response.clone().text());return {code,...await response.json()};}
+test('Private admin links use an opaque hashed secret, expire in 24 hours, and inspection never consumes them',async()=>{
+ const h=harness();assert.equal((await h.route(req('/api/admin/invitations/create',{code:'wrong'}))).status,403);
+ const invitation=await issue(h);assert.match(invitation.token,/^[a-f0-9]{64}$/);assert.ok(Math.abs(invitation.expiresAt-Date.now()-24*3600000)<3000);
+ const stored=await h.store.first('SELECT * FROM admin_invitations');assert.equal(stored.token_hash,h.auth.digest(invitation.token));assert.notEqual(stored.token_hash,invitation.token);
+ for(let i=0;i<2;i++){const response=await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}));assert.equal(response.status,200);assert.equal((await response.json()).email,fixture.email);}
+ assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ const page=await h.route(req('/admin/register'));assert.equal(page.status,200);assert.equal(page.headers.get('referrer-policy'),'no-referrer');assert.equal(page.headers.get('x-robots-tag'),'noindex, nofollow');const html=await page.text();assert.match(html,/data-admin-registration/);assert.ok(!html.includes(invitation.token));assert.ok(!html.includes(fixture.email));
+ assert.equal((await h.route(req('/api/admin/invitations/create',{code:invitation.code}))).status,409);
+});
+test('Registration with a valid admin link atomically creates the account and admin membership, and cannot be replayed',async()=>{
+ const h=harness(),invitation=await issue(h),result=await signup(h,{adminInvitation:invitation.token});const data=await (await h.route(req('/api/session',undefined,result.cookie))).json();assert.equal(data.admin,true);
+ const stored=await h.store.first('SELECT * FROM admin_invitations');assert.equal(stored.used_by,data.user.id);assert.ok(stored.used_at>0);
+ assert.equal((await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}))).status,410);
+ await h.store.run('DELETE FROM administrators');assert.equal((await h.route(req('/api/auth/login',{...fixture,adminInvitation:invitation.token}))).status,410);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ assert.equal((await h.route(req('/api/admin/claim',{code:invitation.code},result.cookie))).status,409);
+});
+test('Admin links reject wrong recipients, expiry and invalid tokens without creating accounts or consuming the link',async()=>{
+ const h=harness(),invitation=await issue(h);
+ assert.equal((await h.route(req('/api/auth/register',{...fixture,email:'not-invited@example.com',adminInvitation:invitation.token}))).status,403);
+ assert.equal((await h.route(req('/api/auth/register',{...fixture,adminInvitation:'4'.repeat(64)}))).status,403);
+ assert.equal((await h.store.all('SELECT * FROM accounts')).length,0);assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ await h.store.run('UPDATE admin_invitations SET expires_at=?',Date.now()-1);
+ assert.equal((await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}))).status,410);
+ assert.equal((await h.route(req('/api/auth/register',{...fixture,adminInvitation:invitation.token}))).status,410);assert.equal((await h.store.all('SELECT * FROM accounts')).length,0);
+});
+test('Existing accounts activate through the same link only after password verification',async()=>{
+ const h=harness(),invitation=await issue(h),{cookie}=await signup(h);
+ assert.equal((await h.route(req('/api/auth/register',{...fixture,adminInvitation:invitation.token}))).status,409);assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ assert.equal((await h.route(req('/api/auth/login',{...fixture,password:'incorrect',adminInvitation:invitation.token}))).status,401);assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ const response=await h.route(req('/api/auth/login',{...fixture,adminInvitation:invitation.token}));assert.equal(response.status,200);const token=response.headers.get('set-cookie').split(';')[0];assert.equal((await (await h.route(req('/api/session',undefined,token))).json()).admin,true);
+ assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user,null);
+});
+test('Creating a secret link disables its old setup code and a consumed bootstrap cannot issue a link',async()=>{
+ const h=harness(),invitation=await issue(h),{cookie}=await signup(h);assert.equal((await h.route(req('/api/admin/claim',{code:invitation.code},cookie))).status,409);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ const other=harness(),registered=await signup(other),code='5'.repeat(40);other.env.ADMIN_INVITE_EMAIL=fixture.email;other.env.ADMIN_INVITE_HASH=other.auth.digest(code);assert.equal((await other.route(req('/api/admin/claim',{code},registered.cookie))).status,200);
+ assert.equal((await other.route(req('/api/admin/invitations/create',{code}))).status,409);
+});
