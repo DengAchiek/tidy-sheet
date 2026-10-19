@@ -74,6 +74,7 @@ async function newSession(request:Request,userId:string){
 }
 export async function register(request:Request,body:any){
   const email=normalizeEmail(body.email),secret=password(body.password),name=typeof body.name==='string'?body.name.trim():'';
+  if(body.confirmPassword!==undefined&&body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','Passwords do not match.');
   if(name.length<2||name.length>80)throw new AppError(400,'invalid_name','Enter your name, between 2 and 80 characters.');
   await rateLimit(request,'register',email,5);
   const invite=body.adminInvitation===undefined?null:await invitationFor(body.adminInvitation,email);
@@ -106,11 +107,30 @@ export async function login(request:Request,body:any){
 }
 export async function recover(request:Request,body:any){
   const email=normalizeEmail(body.email),secret=password(body.password);await rateLimit(request,'recover',email,5);
+  if(body.confirmPassword!==undefined&&body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','New passwords do not match.');
   const row=await first('SELECT * FROM auth_credentials WHERE email=?',email),code=typeof body.recoveryCode==='string'?body.recoveryCode.trim():'';
   if(!row||! /^[a-f0-9]{40}$/.test(code)||!timingSafeEqual(Buffer.from(digest(code),'hex'),Buffer.from(row.recovery_hash,'hex')))throw new AppError(401,'invalid_recovery','Email or recovery code is incorrect.');
   const next=randomBytes(20).toString('hex'),encoded=await hashPassword(secret),db=database();
   const results=await db.batch([db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND recovery_hash=?').bind(encoded,digest(next),row.user_id,row.recovery_hash),db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND recovery_hash=?)').bind(row.user_id,row.user_id,digest(next))]);
   if(!results[0].meta.changes)throw new AppError(401,'invalid_recovery','Email or recovery code is incorrect.');
   return {setCookie:sessionCookie(request,'',0),recoveryCode:next};
+}
+export async function changePassword(request:Request,body:any){
+  const user=await currentUser(request);if(!user)throw new AppError(401,'sign_in_required','Sign in to change your password.');
+  if(user.authSource!=='password')throw new AppError(403,'external_identity','Manage your password through the account you used to sign in.');
+  await rateLimit(request,'password-change',user.userId,5);
+  const secret=password(body.password),current=typeof body.currentPassword==='string'&&body.currentPassword.length<=128?body.currentPassword:'';
+  if(body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','New passwords do not match.');
+  const row=await first('SELECT * FROM auth_credentials WHERE user_id=?',user.userId);
+  if(!row||!await verifyPassword(current,row.password_hash))throw new AppError(401,'incorrect_password','Your current password is incorrect. Use Forgot password if you cannot remember it.');
+  if(current===secret)throw new AppError(400,'password_unchanged','Choose a different password.');
+  const encoded=await hashPassword(secret),recovery=randomBytes(20).toString('hex'),token=randomBytes(32).toString('hex'),now=Date.now(),db=database();
+  const results=await db.batch([
+    db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND password_hash=?').bind(encoded,digest(recovery),user.userId,row.password_hash),
+    db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(user.userId,user.userId,encoded),
+    db.prepare('INSERT INTO auth_sessions (token_hash,user_id,expires_at,created_at) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(digest(token),user.userId,now+AGE,now,user.userId,encoded),
+  ]);
+  if(!results[0].meta.changes)throw new AppError(409,'credentials_changed','Your password has changed. Sign in again before retrying.');
+  return {setCookie:sessionCookie(request,token),recoveryCode:recovery};
 }
 export async function logout(request:Request){const token=cookie(request,sessionName(request));if(token)await run('DELETE FROM auth_sessions WHERE token_hash=?',digest(token));return sessionCookie(request,'',0);}

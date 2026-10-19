@@ -159,3 +159,10 @@ The link uses `/admin/register#invite=...`. Its 256-bit secret is in the URL fra
 Opening or inspecting the link does not consume it. Registration creates the account, credentials, token claim and admin membership in one D1 transaction. An existing account must sign in with the invited email and its password before activation. Privilege activation invalidates its previous sessions and issues a new session. Expired, wrong-email and previously used links are rejected; a consumed link cannot restore revoked access. A browser refresh after fragment removal requires reopening the complete private link, until activation succeeds. Keep links private and out of Git and logs.
 
 `drizzle/0005_outstanding_excalibur.sql` adds the schema-only invitation table and source-code uniqueness constraint. Apply it to an existing standalone D1 database before deploying this version; Sites applies it automatically.
+
+
+### Forgot password and password changes
+
+Every sign-in surface, including private admin invitations, offers **Forgot password?**. Incorrect credentials also show a reset action beside the error. `/forgot-password` accepts the saved recovery code, a new password and confirmation. A successful reset revokes existing sessions and displays a replacement recovery code once. The client returns to sign-in in the same form, keeping an unconsumed admin invitation in memory; resetting alone never grants administrator access. No password-reset email provider is configured.
+
+Signed-in password users can open `/account/security` from My account or the admin sidebar. `POST /api/auth/password` checks the current password and matching new-password confirmation, then changes the salted hash, rotates recovery codes, revokes all old sessions and creates a fresh session for the current browser in one D1 transaction. Password reuse is rejected, attempts are rate-limited, and native ChatGPT identities cannot change a separate password account sharing their email. Password values are never put in URLs; credential forms use POST if JavaScript is unavailable. Users must enter and submit their own new passwords.

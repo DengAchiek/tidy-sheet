@@ -130,3 +130,44 @@ test('Creating a secret link disables its old setup code and a consumed bootstra
  const other=harness(),registered=await signup(other),code='5'.repeat(40);other.env.ADMIN_INVITE_EMAIL=fixture.email;other.env.ADMIN_INVITE_HASH=other.auth.digest(code);assert.equal((await other.route(req('/api/admin/claim',{code},registered.cookie))).status,200);
  assert.equal((await other.route(req('/api/admin/invitations/create',{code}))).status,409);
 });
+
+test('Forgot password and security pages expose recovery and confirmation without allowing anonymous changes',async()=>{
+ const h=harness(),page=await h.route(req('/forgot-password?returnTo=%2Faccount%2Fsecurity'));assert.equal(page.status,200);const html=await page.text();assert.match(html,/data-mode="recover"/);assert.match(html,/name="recoveryCode"/);assert.match(html,/name="confirmPassword"/);assert.match(html,/Forgot password\?/);assert.match(html,/data-auth-return="\/account\/security"/);
+ assert.equal((await h.route(req('/account/security'))).headers.get('location'),'/login?returnTo=%2Faccount%2Fsecurity');
+ assert.equal((await h.route(req('/api/auth/password',{password:'new test password phrase',confirmPassword:'new test password phrase',currentPassword:'unknown'}))).status,401);
+ const {cookie}=await signup(h);const security=await h.route(req('/account/security',undefined,cookie));assert.equal(security.status,200);assert.match(await security.text(),/Current password/);
+ const cross=new Request('https://example.com/api/auth/password',{method:'POST',headers:{origin:'https://evil.example',cookie},body:'{}'});assert.equal((await h.route(cross)).status,403);
+});
+test('Password changes verify the current password, require confirmation and reject reuse',async()=>{
+ const h=harness(),{cookie}=await signup(h),password='a new password testing phrase';const before=await h.store.first('SELECT password_hash FROM auth_credentials');
+ assert.equal((await h.route(req('/api/auth/password',{currentPassword:'incorrect',password,confirmPassword:password},cookie))).status,401);
+ assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password,confirmPassword:'different'},cookie))).status,400);
+ assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password:fixture.password,confirmPassword:fixture.password},cookie))).status,400);
+ assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,1);
+});
+test('A password change rotates recovery and all sessions, keeps the current browser signed in, and preserves roles',async()=>{
+ const h=harness(),{cookie,body}=await signup(h),account=await h.auth.currentUser(req('/',undefined,cookie));await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',account.userId,Date.now());
+ const second=await h.route(req('/api/auth/login',fixture));const otherCookie=second.headers.get('set-cookie').split(';')[0],password='changed testing password phrase 581';
+ const response=await h.route(req('/api/auth/password',{currentPassword:fixture.password,password,confirmPassword:password},cookie));assert.equal(response.status,200);const data=await response.json();assert.equal(data.changed,true);assert.notEqual(data.recoveryCode,body.recoveryCode);
+ const fresh=response.headers.get('set-cookie').split(';')[0];for(const old of [cookie,otherCookie])assert.equal((await (await h.route(req('/api/session',undefined,old))).json()).user,null);
+ const session=await (await h.route(req('/api/session',undefined,fresh))).json();assert.equal(session.user.id,account.userId);assert.equal(session.admin,true);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,1);
+ assert.equal((await h.route(req('/api/auth/login',fixture))).status,401);assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password}))).status,200);
+ assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another recovery password phrase',recoveryCode:body.recoveryCode}))).status,401);
+ assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another recovery password phrase',recoveryCode:data.recoveryCode}))).status,200);
+});
+test('Recovery preserves an unused admin invitation until the user signs in with the new password',async()=>{
+ const h=harness(),{body}=await signup(h),invitation=await issue(h),password='recovered admin testing phrase 927';
+ assert.equal((await h.route(req('/api/auth/login',{...fixture,password:'incorrect',adminInvitation:invitation.token}))).status,401);
+ assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password,confirmPassword:password,recoveryCode:body.recoveryCode,adminInvitation:invitation.token}))).status,200);
+ assert.equal((await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}))).status,200);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ const response=await h.route(req('/api/auth/login',{email:fixture.email,password,adminInvitation:invitation.token}));assert.equal(response.status,200);const cookie=response.headers.get('set-cookie').split(';')[0];assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).admin,true);
+});
+test('Confirmation mismatches do not register an account or consume a recovery code',async()=>{
+ const h=harness();assert.equal((await h.route(req('/api/auth/register',{...fixture,confirmPassword:'different'}))).status,400);assert.equal((await h.store.all('SELECT * FROM accounts')).length,0);
+ const {body}=await signup(h),before=await h.store.first('SELECT recovery_hash FROM auth_credentials');assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another test password phrase',confirmPassword:'different',recoveryCode:body.recoveryCode}))).status,400);assert.equal((await h.store.first('SELECT recovery_hash FROM auth_credentials')).recovery_hash,before.recovery_hash);
+});
+test('ChatGPT identities cannot change an unlinked password account with the same email',async()=>{
+ const h=harness();await signup(h);h.setNative({userId:'native-other-account',email:fixture.email,displayName:'Native',fullName:'Native'});
+ const page=await h.route(req('/account/security'));assert.equal(page.status,200);assert.doesNotMatch(await page.text(),/id="passwordChangeForm"/);
+ assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password:'different testing phrase 192',confirmPassword:'different testing phrase 192'}))).status,403);
+});
