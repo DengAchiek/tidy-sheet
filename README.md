@@ -14,6 +14,8 @@ See [Billing setup](docs/BILLING_SETUP.md) for the remaining merchant setup, run
 
 Requires Node.js **22.13 or later** and npm. Python is no longer required.
 
+The Cloudflare toolchain is pinned together: Wrangler `4.151.1`, Workers types `5.20261018.1`, and Vite plugin `1.64.0`. Commit both `package.json` and `package-lock.json` when changing these versions, and use `npm run install:ci` (or `npm ci`) in build environments. Wrangler `4.151.1` requires Workers types `^5.20261006.1`; the older `4.20260515.1` pin causes npm `ERESOLVE` if Wrangler is upgraded alone. Resolve the package versions rather than using `--force` or `--legacy-peer-deps`.
+
 ```sh
 git clone https://github.com/DengAchiek/tidy-sheet.git
 cd tidy-sheet
