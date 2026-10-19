@@ -25,7 +25,7 @@ function app(identity=null) {
   ]));
   const render = compile('../server/render.ts', { ...templates, 'cloudflare:workers': { env: {} }, './billing': billing });
   return compile('../server/router.ts', {
-    '../app/chatgpt-auth': { getChatGPTUser: async () => identity },
+    './auth': { currentUser: async () => identity }, './analytics': {},
     './store': { accountFor: unavailable, subscriptionFor: unavailable, first: unavailable, all: unavailable, run: unavailable },
     './policy.mjs': policy, './billing': billing, './render': render,
   }).handleRequest;
@@ -36,11 +36,11 @@ test('Landing cleaning buttons open the full uploader without an account or bill
   assert.equal(response.status,200);
   const html = await response.text();
   assert.match(html,/href="\/sheet-cleaner.html">Clean a spreadsheet/);
-  assert.match(html,/Free to use. No sign-up./);
-  assert.doesNotMatch(html,/Continue with ChatGPT|Start free trial|href="\/account"/);
+  assert.match(html,/Sign in to use your own file/);
+  assert.doesNotMatch(html,/Start free trial/);
 });
 
-test('Anonymous and expired-account visitors can upload, clean and export from the public workspace', async () => {
+test('The cleaner shell and sample remain public while own-file upload has an account dialog', async () => {
   for (const identity of [null,{userId:'expired-account',email:'expired@example.com',displayName:'Expired'}]) {
     for (const path of ['/cleaner','/sheet-cleaner.html','/sheet-cleaner.html?sample=1']) {
       const response=await app(identity)(new Request('https://example.com'+path));
@@ -52,7 +52,9 @@ test('Anonymous and expired-account visitors can upload, clean and export from t
       assert.equal(session.access.business,true);
       assert.equal(session.access.training,false);
       assert.match(html,/id="browse"/);
-      assert.doesNotMatch(html,/Continue with ChatGPT|Start free trial/);
+      assert.match(html,/id="uploadAuthDialog"/);
+      assert.match(html,/data-auth-mode="register"/);
+      assert.equal(session.user?.id||null,identity?.userId||null);
     }
   }
 });

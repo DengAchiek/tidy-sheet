@@ -33,3 +33,27 @@ export const processingEvents=sqliteTable('processing_events',{
   durationMs:integer('duration_ms').notNull(),rowCount:integer('row_count').notNull(),columnCount:integer('column_count').notNull(),
   timeToExportMs:integer('time_to_export_ms'),createdAt:integer('created_at').notNull(),
 },t=>[index('processing_user_created').on(t.userId,t.createdAt)]);
+
+export const credentials=sqliteTable('auth_credentials',{
+  userId:text('user_id').primaryKey().references(()=>accounts.id),
+  email:text('email').notNull(),passwordHash:text('password_hash').notNull(),recoveryHash:text('recovery_hash').notNull(),
+},t=>[uniqueIndex('auth_email_unique').on(t.email)]);
+export const sessions=sqliteTable('auth_sessions',{
+  tokenHash:text('token_hash').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),
+  expiresAt:integer('expires_at').notNull(),createdAt:integer('created_at').notNull(),
+},t=>[index('sessions_user').on(t.userId),index('sessions_expiry').on(t.expiresAt)]);
+export const authLimits=sqliteTable('auth_rate_limits',{
+  key:text('key').primaryKey(),attempts:integer('attempts').notNull(),expiresAt:integer('expires_at').notNull(),
+});
+export const administrators=sqliteTable('administrators',{
+  userId:text('user_id').primaryKey().references(()=>accounts.id),createdAt:integer('created_at').notNull(),
+});
+export const adminInviteClaims=sqliteTable('admin_invite_claims',{
+  inviteHash:text('invite_hash').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),createdAt:integer('created_at').notNull(),
+});
+export const siteEvents=sqliteTable('site_events',{
+  id:text('id').primaryKey(),visitorId:text('visitor_id'),userId:text('user_id').references(()=>accounts.id),
+  kind:text('kind').notNull(),path:text('path').notNull(),sample:integer('sample').notNull().default(0),
+  outcome:text('outcome').notNull(),durationMs:integer('duration_ms'),rowCount:integer('row_count'),columnCount:integer('column_count'),
+  createdAt:integer('created_at').notNull(),
+},t=>[index('site_events_time').on(t.createdAt),index('site_events_kind_time').on(t.kind,t.createdAt),index('site_events_visitor_time').on(t.visitorId,t.createdAt)]);

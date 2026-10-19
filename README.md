@@ -1,8 +1,8 @@
 # TidySheet
 
-A browser-local CSV and Excel cleaner with direct, free access. The landing page's cleaning buttons open the uploader, where visitors can import, clean, review and export their own files without an account, trial or subscription. The navbar stays visible while scrolling.
+A browser-local CSV and Excel cleaner with direct, free access. The landing page's cleaning buttons open the uploader, where visitors sign in or register to import, clean, review and export their own files. The sample remains available without an account; business cleaning needs no subscription. The navbar stays visible while scrolling.
 
-Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. Business cleaning is public on both Sites and the standalone Cloudflare Worker; accounts, billing records and training workspaces remain protected.
+Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. The cleaner and sample remain publicly accessible on both deployments. Users sign in or register before importing their own files. Accounts, billing, training workspaces, and the admin dashboard have server-side access checks.
 
 ## Billing activation status
 
@@ -26,7 +26,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 This command needs a Cloudflare credential with D1 write access. The database can also be initialized through its dashboard SQL console using the existing migration files in order. Do not replay already applied migrations. Leave `TIDYSHEET_D1_DATABASE_ID` unset for local previews and Sites publication, where Sites provisions the hosted database. Local previews continue to use a placeholder ID with Wrangler's `--local` flag.
 
-Standalone builds also emit `TIDYSHEET_IDENTITY_MODE=disabled`: they cannot trust the Sites identity headers without its gateway. Public pages and the free sample remain available; private workspaces and account sign-in require a separately configured authentication provider. Sites publication keeps native ChatGPT sign-in.
+Standalone builds also emit `TIDYSHEET_IDENTITY_MODE=disabled`: they cannot trust the Sites identity headers without its gateway. Public pages and the free sample remain available. Email-and-password registration, sessions and recovery codes work on both deployments. Sites publication also preserves native ChatGPT sign-in. Password accounts are never automatically linked to a ChatGPT account with the same email.
 
 ```sh
 git clone https://github.com/DengAchiek/tidy-sheet.git
@@ -65,7 +65,7 @@ Browser QA covers account creation, access checks, the free sample, a synthetic 
 - `public/assets/`: browser-local business and training preparation engines, workers, styles, and bundled SheetJS library.
 - `.openai/hosting.json`: existing Site identity and D1 binding. No secrets.
 
-The business cleaner route is public and does not query account storage or billing. Its server-rendered session enables browser-local import, cleaning and export without authorization requests or activity uploads. The sample URL preloads example data but also allows visitors to use their own file. Training and account APIs retain authentication and entitlement checks. **The cleaning engine is open-source client code**; browser-only execution cannot provide DRM over it.
+The business cleaner shell is public, and choosing an own file opens an authentication dialog. A dropped file is retained only in memory while the visitor signs in; canceling the dialog leaves the sample available. Imported contents and filenames never leave the device. Own-file cleaning checks an active login; business access is free, while training retains its entitlement checks. Bounded processing metadata and page paths feed an administrator-only dashboard. The sample URL preloads example data and own-file importing still requires sign-in. **The cleaning engine is open-source client code**; browser-only execution cannot provide DRM over it.
 
 ## Account and subscription behavior
 
@@ -135,3 +135,16 @@ Signed-in processing emits best-effort, tenant-scoped counts and timings: import
 Run `npm run benchmark` to reproduce `docs/performance-latest.json`. It processes synthetic 10k, 50k and 100k-row normal, malformed-value, long-text and 10-column files in isolated Node worker-source harnesses. Every case verifies row retention, CSV, quality-report and XLSX generation, and records timings and peak RSS. These are Node measurements on the recorded host, not browser guarantees or a universal speed claim. Browser QA separately checks templates, summary mappings, review/undo, and responsive controls. Existing limits remain 20 MB, 100,000 data rows, 100 columns and 1 million input cells.
 
 Local previews require the additive `drizzle/0002_military_adam_destine.sql` migration for the operational metrics table. Hosted deployment applies the generated schema migration through Sites before updating the Worker.
+
+
+## Login and administration
+
+`/register` and `/login` use D1-backed email/password accounts on both hosts. Passwords are salted scrypt hashes with N=16384, r=8, p=5 (16 MiB working memory); Node-compatible crypto runs server-side. Passwords must be 15–128 characters. HTTPS sessions use a seven-day, Secure, HttpOnly, SameSite=Lax `__Host-` cookie; D1 stores only a SHA-256 token hash. Login rotates the current session, logout deletes it, and expiry is checked on every request. Cross-origin writes are rejected. D1-backed 15-minute limits cover login, registration, recovery, admin activation and analytics; raw IP addresses are not stored. Email addresses on password accounts are unverified and confer no privileges.
+
+Registration displays a recovery code once. `/api/auth/recover` requires that code, rotates it, changes the password, and revokes all sessions. No reset email or email provider is configured. The UI tells users to keep their recovery code. Do not seed production credentials, choose user passwords, or grant administrator access to the first registrant.
+
+`/admin` and `/api/admin/overview?days=7|30|90` require a row in `administrators` for the authenticated account ID. The dashboard includes browser visitors, page views, new/active accounts, own-file imports/cleanings/exports, failures, operation durations, UTC daily traffic, popular paths and recent activity. Empty periods show zeros. Browser-reported metrics are approximate and may be blocked or falsified; they are not billing or security-audit evidence. Samples are separated, exports mean prepared files, and imports happen locally. No spreadsheet contents, filenames, query strings or raw user-agent data are recorded. A first-party random visitor cookie lasts 30 days; analytics retention is 90 days with bounded cleanup on writes. Each deployment has its own database and statistics.
+
+To invite the first administrator, generate a cryptographically random 20-byte hex code outside the repository. Configure runtime secrets `ADMIN_INVITE_EMAIL` and `ADMIN_INVITE_HASH` (SHA-256 of the raw code) on the deployment. Give the raw code privately to the invited person. They register/sign in, open `/admin`, and enter the code themselves. Activation requires both the matching account email and possession of the code. A transaction consumes the invitation and creates membership; revoking membership does not make that code reusable. Never place codes or user passwords in Git, build variables, URLs or public HTML. Runtime secrets survive standalone Wrangler builds; apply Sites environment changes with a new deployment. Native ChatGPT identities and password accounts remain separate, so activate using the identity you will use for administration.
+
+Apply additive migrations `0003_common_multiple_man.sql` and `0004_high_the_order.sql` after earlier migrations in an existing standalone D1 database. Sites applies them during deployment. They contain schema only and never pre-create an admin. `tests/accounts-admin.test.mjs` verifies sessions, recovery, throttling, invitation consumption, server-side role checks, visitor counting and UTC filters with SQLite and the real server modules.

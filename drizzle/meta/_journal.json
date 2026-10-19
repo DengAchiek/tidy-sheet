@@ -22,6 +22,20 @@
       "when": 1792396124726,
       "tag": "0002_military_adam_destine",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1792437831546,
+      "tag": "0003_common_multiple_man",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1792438167004,
+      "tag": "0004_high_the_order",
+      "breakpoints": true
     }
   ]
 }
