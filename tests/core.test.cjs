@@ -94,3 +94,45 @@ test('Row and cell limits fail clearly',()=>{
   assert.throws(()=>C.prepare([Array(101).fill('Header'),['x']]),/100 columns/);
   assert.throws(()=>C.prepare([['A'],...Array(100001).fill(['x'])]),/too large/);
 });
+test('Null analysis separates blanks and exact null markers without treating zero or false as missing',()=>{
+  const markers=['N/A',' NA ','null','NONE','nil','undefined','---'];
+  const model={headers:['A','B'],rows:[...markers.map(value=>[value,'present']),[' \t\n',''],[0,false],['nullify','banana']]};
+  const original=JSON.stringify(model),analysis=C.analyzeNulls(model);
+  assert.equal(analysis.rowCount,10);assert.equal(analysis.cellCount,20);
+  assert.equal(analysis.blank,2);assert.equal(analysis.markers,7);assert.equal(analysis.missing,9);
+  assert.equal(analysis.percentage,45);assert.equal(analysis.rowsWithMissing,8);assert.equal(analysis.completeRows,2);
+  assert.equal(analysis.columns[0].missing,8);assert.equal(analysis.columns[0].percentage,80);
+  assert.equal(analysis.columns[1].missing,1);assert.equal(JSON.stringify(model),original);
+});
+test('Null analysis handles empty output and missing trailing cells without invalid percentages',()=>{
+  const empty=C.analyzeNulls({headers:['A','B'],rows:[]});
+  assert.equal(empty.percentage,0);assert.equal(empty.completeRows,0);assert.equal(empty.columns[0].percentage,0);
+  const ragged=C.analyzeNulls({headers:['A','B'],rows:[[null],['value',undefined]]});
+  assert.equal(ragged.blank,3);assert.equal(ragged.markers,0);assert.equal(ragged.rowsWithMissing,2);
+});
+test('Before and after null analysis use their own row counts after deduplication and empty-row removal',()=>{
+  const model=C.prepare([['ID','Amount'],['a','N/A'],['a','null'],['',''],['b','0']]);
+  const before=C.analyzeNulls(model),result=C.clean(model,defaults),after=result.nullAnalysis;
+  assert.equal(before.missing,4);assert.equal(before.cellCount,8);assert.equal(before.rowsWithMissing,3);
+  assert.deepEqual(result.rows,[['a',''],['b','0']]);
+  assert.equal(after.rowCount,2);assert.equal(after.cellCount,4);assert.equal(after.missing,1);
+  assert.equal(after.blank,1);assert.equal(after.markers,0);assert.equal(after.percentage,25);
+  assert.equal(after.columns[1].percentage,50);assert.equal(after.rowsWithMissing,1);
+  assert.equal(before.columns[1].percentage,75);assert.equal(model.rows[0][1],'N/A');
+});
+test('Null analysis still counts preserved markers when their conversion and trimming are disabled',()=>{
+  const result=run([['ID','Note'],['a',' null '],['b','N/A'],['c','0']],{nulls:false,trim:false});
+  assert.equal(result.rows[0][1],' null ');assert.equal(result.rows[1][1],'N/A');
+  assert.equal(result.nullAnalysis.markers,2);assert.equal(result.nullAnalysis.blank,0);
+  assert.equal(result.nullAnalysis.rowsWithMissing,2);
+});
+test('Null report keeps before and after denominators and leaves unrun results empty',()=>{
+  const before=C.analyzeNulls({headers:['Name','Amount'],rows:[['Alice','N/A'],['Bob','0']]}),after=C.analyzeNulls({headers:['Name','Amount'],rows:[['Bob','0']]});
+  assert.deepEqual(C.nullReportRows(before,after)[2],['Amount',2,0,1,1,50,1,0,0,0,0]);
+  assert.deepEqual(C.nullReportRows(before)[2],['Amount',2,0,1,1,50,'','','','','']);
+});
+test('Null analysis remains defined when every row is removed by cleaning',()=>{
+  const result=run([['Name','Email'],['','null'],['Alice','bad email']],{dropInvalid:true});
+  assert.equal(result.rows.length,0);assert.equal(result.nullAnalysis.missing,0);
+  assert.equal(result.nullAnalysis.rowCount,0);assert.equal(result.nullAnalysis.percentage,0);
+});

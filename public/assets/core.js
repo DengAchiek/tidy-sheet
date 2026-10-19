@@ -8,6 +8,37 @@
   const LIMITS = { bytes: 20 * 1024 * 1024, rows: 100000, columns: 100, cells: 1000000 };
   const TYPES = { text: 'Text / ID', name: 'Person name', email: 'Email', phone: 'Kenyan mobile', date: 'Date', number: 'Number / amount' };
   const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
+  const NULL_MARKER = /^(?:n\/a|na|null|none|nil|-+|undefined)$/i;
+  function analyzeNulls({headers,rows}) {
+    const columns=headers.map(name=>({name,blank:0,markers:0,missing:0,percentage:0}));
+    let rowsWithMissing=0;
+    for(const row of rows){
+      let hasMissing=false;
+      for(let i=0;i<headers.length;i++){
+        const value=String(row[i]??'').trim(),column=columns[i];
+        if(!value){column.blank++;hasMissing=true;}
+        else if(NULL_MARKER.test(value)){column.markers++;hasMissing=true;}
+      }
+      if(hasMissing)rowsWithMissing++;
+    }
+    let blank=0,markers=0;
+    for(const column of columns){
+      column.missing=column.blank+column.markers;
+      column.percentage=rows.length?column.missing/rows.length*100:0;
+      blank+=column.blank;markers+=column.markers;
+    }
+    const missing=blank+markers,cellCount=rows.length*headers.length;
+    return {rowCount:rows.length,cellCount,blank,markers,missing,percentage:cellCount?missing/cellCount*100:0,rowsWithMissing,completeRows:rows.length-rowsWithMissing,columns};
+  }
+  function nullReportRows(before,after) {
+    return [
+      ['Column','Rows before','Blank before','Null markers before','Missing before','Missing % before','Rows after','Blank after','Null markers after','Missing after','Missing % after'],
+      ...before.columns.map((column,i)=>{
+        const cleaned=after?.columns[i];
+        return [column.name,before.rowCount,column.blank,column.markers,column.missing,column.percentage,...(cleaned?[after.rowCount,cleaned.blank,cleaned.markers,cleaned.missing,cleaned.percentage]:['','','','',''])];
+      })
+    ];
+  }
   function guess(header) {
     const h = header.toLowerCase().replace(/[_-]/g, ' ');
     if (/email|e mail/.test(h)) return 'email';
@@ -107,7 +138,7 @@
       const row=rows[ri],source=sourceRows[ri],values=[],rowFlags=[],rowChanged=[],rowIssues=[],rowAudit=[];
       for(let ci=0;ci<headers.length;ci++){
         const raw=row[ci];let s=config.trim===false?raw:raw.replace(/\s+/gu,' ').trim();
-        if(config.nulls&&/^(?:n\/a|na|null|none|nil|-+|undefined)$/i.test(s))s='';
+        if(config.nulls&&NULL_MARKER.test(s))s='';
         let result={value:s};
         if(s){switch(types[ci]){
           case 'name':if(config.titleCase)result.value=s.toLowerCase().replace(/(^|[\s\-'’])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase());break;
@@ -139,7 +170,7 @@
       if(onProgress&&ri%2000===0)onProgress(Math.round((ri+1)/rows.length*100));
     }
     stats.output=output.length;
-    return {rows:output,flags,changed,sourceRows:origins,issues,audit,stats};
+    return {rows:output,flags,changed,sourceRows:origins,issues,audit,stats,nullAnalysis:analyzeNulls({headers,rows:output})};
   }
   function safeCSVValue(value) {
     const s=String(value??'');
@@ -147,5 +178,5 @@
     return /^[\s\u0000-\u001f]*[=+@-]/.test(s)&&!/^\s*-\d+(?:\.\d+)?\s*$/.test(s)||/^[\t\r\n]/.test(s)?"'"+s:s;
   }
   function toCSV(rows,safe=true){return '\uFEFF'+rows.map(row=>row.map(v=>{const s=safe?safeCSVValue(v):String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\r\n');}
-  return {LIMITS,TYPES,guess,parseCSV,prepare,phone,email,date,number,clean,toCSV,safeCSVValue};
+  return {LIMITS,TYPES,guess,parseCSV,prepare,phone,email,date,number,clean,analyzeNulls,nullReportRows,toCSV,safeCSVValue};
 });

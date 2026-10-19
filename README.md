@@ -87,6 +87,8 @@ Limits remain 20 MB per file, 100,000 data rows, 100 columns, and 1,000,000 cell
 
 Invalid values are preserved unless the user explicitly removes their rows. Duplicate removal keeps the first matching record, without merging records; blank or invalid selected keys are excluded. Numeric dates use an explicit date order and four-digit years.
 
+The business workspace analyzes null and missing values on import and after cleaning. Per-column counts separate blanks (including whitespace) from exact, case-insensitive markers: N/A, NA, null, none, nil, undefined, and one or more dashes. Zero and false remain values. Before counts use all imported rows; after counts use retained cleaned rows, with separate percentage denominators. Analysis includes markers even when conversion to blanks is disabled. Cleaning does not fill missing cells. Download a standalone CSV report, or find the comparison in the Excel export's **Null analysis** worksheet.
+
 Excel exports retain text phone numbers and IDs and export safe amounts with up to 15 digits as numbers. Longer amounts remain strings. CSV exports use proper quoting and prefix formula-like text, including +254 phone strings, with an apostrophe. A complete change log is available for business cleaning. Training exports include preparation reports and source-row mapping, which can contain original labels and filenames; handle exports with the same care as the source data.
 
 ## Third-party software

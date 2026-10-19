@@ -19,7 +19,7 @@
   function message(text,kind='error'){$('message').textContent=text;$('message').className='notice global-notice '+kind;$('message').hidden=!text;}
   function ensureWorker(){
     if(worker)return worker;
-    worker=new Worker('assets/worker.js');
+    worker=new Worker('assets/worker.js?v=2.2.0');
     worker.onmessage=({data})=>{
       const job=pending.get(data.id);if(!job)return;
       if(data.progress!==undefined){$('busyText').textContent='Standardizing your spreadsheet… '+data.progress+'%';return;}
@@ -31,7 +31,7 @@
   function request(action,payload={}){return new Promise((resolve,reject)=>{try{const id=++sequence;pending.set(id,{resolve,reject});ensureWorker().postMessage({id,action,...payload});}catch(e){pending.delete(sequence);reject(e);}});}
   function setBusy(value,label='Working…',canCancel=true){
     busy=value;$('busy').hidden=!value;$('busyText').textContent=label;$('cancel').hidden=!canCancel;
-    document.querySelectorAll('#run,#sample,#browse,#newFile,#hasHeader,#sheetSelect,#downloadXlsx,#downloadCsv,#downloadLog,.type-select,.key-check,#dateOrder,#trim,#titleCase,#nulls,#removeEmpty,#removeDuplicates,#caseInsensitive,#dropInvalid').forEach(el=>el.disabled=value);
+    document.querySelectorAll('#run,#sample,#browse,#newFile,#hasHeader,#sheetSelect,#downloadXlsx,#downloadCsv,#downloadLog,#downloadNullReport,.type-select,.key-check,#dateOrder,#trim,#titleCase,#nulls,#removeEmpty,#removeDuplicates,#caseInsensitive,#dropInvalid').forEach(el=>el.disabled=value);
   }
   function invalidate(){
     if(!result)return;
@@ -41,7 +41,7 @@
   }
   function config(){return {types:types.slice(),keys:keys.map((v,i)=>v?i:-1).filter(i=>i>=0),dateOrder:$('dateOrder').value,...Object.fromEntries(['trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'].map(id=>[id,$(id).checked]))};}
   function refreshModel(){
-    model=C.prepare(matrix,$('hasHeader').checked);original={...model,rows:model.rows.map(r=>r.slice())};
+    model=C.prepare(matrix,$('hasHeader').checked);original={...model,rows:model.rows.map(r=>r.slice()),nullAnalysis:C.analyzeNulls(model)};
     types=model.headers.map(C.guess);keys=types.map(()=>false);edits=[];result=null;view='original';page=0;
     $('columns').innerHTML=model.headers.map((h,i)=>`<div class="column-config"><label class="field"><span title="${esc(h)}">${esc(h)}</span><select class="type-select" data-column="${i}" aria-label="Type for ${esc(h)}">${Object.entries(C.TYPES).map(([k,v])=>`<option value="${k}"${types[i]===k?' selected':''}>${esc(v)}</option>`).join('')}</select></label><span class="example" title="${esc(model.rows[0]?.[i])}">e.g. ${esc(model.rows[0]?.[i]||'—')}</span><label class="checkbox-label"><input class="key-check" data-column="${i}" type="checkbox">Use as duplicate key</label></div>`).join('');
     $('fileName').textContent=currentFile.name;$('fileExt').textContent=currentFile.name.split('.').at(-1).toUpperCase();
@@ -90,6 +90,22 @@
     const s=result?.stats;
     const stats=s?[['Rows kept',s.output,fmt(s.input)+' rows imported',''],['Values standardized',s.changed,'Across all input rows','green'],['Duplicates removed',s.duplicates,'First matching record kept',''],['Rows to review',s.review,'Retained rows with invalid cells',s.review?'alert':'']]:[['Imported rows',model.rows.length,'Ready to clean',''],['Columns',model.headers.length,'Confirm each column type',''],['Duplicate matching',keys.filter(Boolean).length,keys.some(Boolean)?'Selected key columns':'Comparing the whole row',''],['Status','Ready','Choose rules, then clean','green']];
     $('stats').innerHTML=stats.map(([label,n,detail,cls])=>`<div class="stat ${cls}"><span class="stat-label">${esc(label)}</span><strong>${typeof n==='number'?fmt(n):n}</strong><span class="stat-detail">${esc(detail)}</span></div>`).join('');
+    renderNullAnalysis();
+  }
+  function renderNullAnalysis(){
+    const before=original.nullAnalysis,after=result?.nullAnalysis;
+    const percent=n=>n.toLocaleString(undefined,{maximumFractionDigits:1})+'%';
+    $('nullBeforeCount').textContent=fmt(before.missing);
+    $('nullBeforeDetail').textContent=`${percent(before.percentage)} of ${fmt(before.cellCount)} cells · ${fmt(before.rowCount)} rows`;
+    $('nullAfterCount').textContent=after?fmt(after.missing):'—';
+    $('nullAfterDetail').textContent=after?`${percent(after.percentage)} of ${fmt(after.cellCount)} cells · ${fmt(after.rowCount)} rows`:'Clean your spreadsheet to compare.';
+    $('nullRowsCount').textContent=after?`${fmt(before.rowsWithMissing)} → ${fmt(after.rowsWithMissing)}`:fmt(before.rowsWithMissing);
+    $('nullRowsDetail').textContent=after?`${fmt(before.completeRows)} complete rows before · ${fmt(after.completeRows)} after`:`${fmt(before.completeRows)} of ${fmt(before.rowCount)} rows are complete`;
+    $('nullAnalysisRows').innerHTML=before.columns.map((column,i)=>{
+      const cleaned=after?.columns[i];
+      return `<tr><th scope="row">${esc(column.name)}</th><td>${fmt(column.blank)}</td><td>${fmt(column.markers)}</td><td>${fmt(column.missing)} <span class="muted">(${percent(column.percentage)})</span></td><td>${cleaned?`${fmt(cleaned.missing)} <span class="muted">(${percent(cleaned.percentage)})</span>`:'—'}</td></tr>`;
+    }).join('');
+    $('nullAnalysisNote').textContent=after?'Before uses all imported rows; after uses the retained cleaned rows. Counts include null markers even when their conversion is off. Cleaning does not fill missing values.':'Counts include blank and whitespace-only cells, plus N/A, NA, null, none, nil, undefined, and dashes. Zero and false are values.';
   }
   function filteredRows(){
     const query=$('search').value.trim().toLowerCase(),filter=$('rowFilter').value;
@@ -153,10 +169,11 @@
   $('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page=0;renderTable();},160);};
   $('rowFilter').onchange=()=>{page=0;renderTable();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};
   $('downloadCsv').onclick=async()=>{if(result&&await authorizeDownload())csvDownload([model.headers,...result.rows],'_cleaned.csv');};
+  $('downloadNullReport').onclick=async()=>{if(original&&await authorizeDownload())csvDownload(C.nullReportRows(original.nullAnalysis,result?.nullAnalysis),'_null_analysis.csv');};
   $('downloadLog').onclick=async()=>{if(!result||!await authorizeDownload())return;const entries=result.audit.length?result.audit:[{row:'',column:'',original:'',cleaned:'',issue:'No changes or issues found',action:'No change'}];csvDownload([['Source row','Column','Original value','Cleaned value','Detail','Action'],...entries.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action])],'_change_log.csv');};
   $('downloadXlsx').onclick=async()=>{
     if(!result||busy||!await authorizeDownload())return;message('');setBusy(true,'Preparing your Excel download…');
-    try{const buffer=await request('xlsx',{headers:model.headers,result,types});download(new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'_cleaned.xlsx');}
+    try{const buffer=await request('xlsx',{headers:model.headers,result,types,nullBefore:original.nullAnalysis});download(new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'_cleaned.xlsx');}
     catch(e){if(e.message!=='Cancelled')message(e.message);}
     finally{setBusy(false);}
   };

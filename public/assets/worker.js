@@ -1,5 +1,5 @@
 'use strict';
-importScripts('core.js');
+importScripts('core.js?v=2.2.0');
 let workbook=null;
 function excel(){if(!self.XLSX)importScripts('vendor/xlsx.full.min.js');return self.XLSX;}
 function sheetMatrix(name){
@@ -54,6 +54,7 @@ self.onmessage=async({data})=>{
       const issueRows=[['Source row','Column','Original value','Cleaned value','Detail','Action'],...data.result.issues.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action])];
       X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet(issueRows),'Issues');
       X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet([['Metric','Value'],...Object.entries(data.result.stats)]),'Summary');
+      if(data.nullBefore&&data.result.nullAnalysis)X.utils.book_append_sheet(wb,X.utils.aoa_to_sheet(TidyCore.nullReportRows(data.nullBefore,data.result.nullAnalysis)),'Null analysis');
       const buffer=X.write(wb,{type:'array',bookType:'xlsx'});postMessage({id,result:buffer},[buffer]);return;
     }else throw Error('Unknown operation.');
     postMessage({id,result});

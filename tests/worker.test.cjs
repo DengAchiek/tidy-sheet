@@ -8,7 +8,7 @@ function harness(){
   let resolve,reject;
   const ctx=vm.createContext({console,File,Blob,TextEncoder,TextDecoder,Date,ArrayBuffer,Uint8Array,Uint16Array,Int32Array,setTimeout,clearTimeout});
   ctx.self=ctx;ctx.postMessage=message=>{if(message.progress!==undefined)return;message.error?reject(Error(message.error)):resolve(message.result);};
-  ctx.importScripts=(...scripts)=>scripts.forEach(s=>vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/assets',s),'utf8'),ctx));
+  ctx.importScripts=(...scripts)=>scripts.forEach(s=>vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/assets',s.split('?')[0]),'utf8'),ctx));
   vm.runInContext(fs.readFileSync(path.join(__dirname,'../public/assets/worker.js'),'utf8'),ctx);
   return (action,payload)=>new Promise((res,rej)=>{resolve=res;reject=rej;ctx.onmessage({data:{id:1,action,...payload}});});
 }
@@ -49,4 +49,14 @@ test('Malformed CSV errors propagate out of the processing worker',async()=>{
 });
 test('Non-UTF-8 text is rejected instead of silently corrupting names',async()=>{
   await assert.rejects(harness()('import',{file:new File([new Uint8Array([65,10,0xe9])],'latin1.csv')}),/UTF-8/);
+});
+test('Actual worker exports a null-analysis worksheet with original and cleaned missing-value counts',async()=>{
+  const request=harness(),C=require('../public/assets/core.js');
+  const model=C.prepare([['ID','Amount'],['a','N/A'],['a','null'],['',''],['b','0']]),types=model.headers.map(C.guess);
+  const result=await request('clean',{model,config:{types,trim:true,nulls:true,removeEmpty:true,removeDuplicates:true}});
+  assert.equal(result.nullAnalysis.missing,1);
+  const buffer=await request('xlsx',{headers:model.headers,result,types,nullBefore:C.analyzeNulls(model)}),wb=X.read(buffer,{type:'array'});
+  assert.deepEqual(wb.SheetNames,['Cleaned','Issues','Summary','Null analysis']);
+  const report=X.utils.sheet_to_json(wb.Sheets['Null analysis'],{header:1});
+  assert.deepEqual(report[2],['Amount',4,1,2,3,75,2,1,0,1,50]);
 });
