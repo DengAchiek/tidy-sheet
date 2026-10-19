@@ -14,7 +14,9 @@ See [Billing setup](docs/BILLING_SETUP.md) for the remaining merchant setup, run
 
 Requires Node.js **22.13 or later** and npm. Python is no longer required.
 
-The Cloudflare toolchain is pinned together: Wrangler `4.151.1`, Workers types `5.20261018.1`, and Vite plugin `1.64.0`. Commit both `package.json` and `package-lock.json` when changing these versions, and use `npm run install:ci` (or `npm ci`) in build environments. Wrangler `4.151.1` requires Workers types `^5.20261006.1`; the older `4.20260515.1` pin causes npm `ERESOLVE` if Wrangler is upgraded alone. Resolve the package versions rather than using `--force` or `--legacy-peer-deps`.
+The Cloudflare toolchain is pinned together: Wrangler `4.151.2`, Workers types `5.20261019.1`, and Vite plugin `1.64.0`. Commit both `package.json` and `package-lock.json` when changing these versions, and use `npm run install:ci` (or `npm ci`) in build environments. Wrangler `4.151.2` requires Workers types `^5.20261019.1`; the older `4.20260515.1` pin causes npm `ERESOLVE` if Wrangler is upgraded alone. Resolve the package versions rather than using `--force` or `--legacy-peer-deps`.
+
+For Cloudflare Workers Builds, use `npm run build` as the build command and `npm run deploy` as the deploy command. The deploy script calls the installed Wrangler directly and passes `dist/server/wrangler.json`, avoiding framework auto-configuration and a separate latest-version install. The build must use the GitHub branch containing these dependency files; retrying an older commit keeps its old Workers types pin. Sites publication and GitHub pushes are separate operations. The generated Worker configuration has a placeholder D1 ID for local/Sites builds; a separately hosted Worker also needs its actual database binding and runtime identity configuration before production use.
 
 ```sh
 git clone https://github.com/DengAchiek/tidy-sheet.git

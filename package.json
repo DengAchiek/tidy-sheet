@@ -9,6 +9,7 @@
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
     "build": "node scripts/run-framework.mjs build",
+    "deploy": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js deploy --config dist/server/wrangler.json",
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
@@ -44,7 +45,7 @@
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "1.64.0",
-    "@cloudflare/workers-types": "5.20261018.1",
+    "@cloudflare/workers-types": "5.20261019.1",
     "@tailwindcss/postcss": "4.2.1",
     "@types/node": "22.19.19",
     "@types/react": "19.2.14",
@@ -62,7 +63,7 @@
     "typescript": "5.9.3",
     "vinext": "1.0.0-beta.5",
     "vite": "8.0.13",
-    "wrangler": "4.151.1"
+    "wrangler": "4.151.2"
   },
   "type": "module",
   "overrides": {
