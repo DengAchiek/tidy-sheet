@@ -129,8 +129,8 @@ test('Trial includes training and expires without granting paid time',()=>{const
 function routes(h,identity){
   return compile('../server/router.ts',{'../app/chatgpt-auth':{getChatGPTUser:async()=>identity},'./store':h.store,'./policy.mjs':policy,'./billing':h.billing,'./render':{esc:String,landingPage:()=>'<h1>Landing</h1>',privacyPage:()=>'',choosePage:()=>'<h1>Choose</h1>',trainingPage:()=>'<h1>Training</h1>',cleanerPage:()=>'<h1>Business</h1>',signInPage:()=>'<h1>Sign in</h1>',accountPage:()=>'<h1>Account</h1>'}}).handleRequest;
 }
-test('Server rejects anonymous workspace access and cross-origin mutation',async()=>{
-  const h=harness(),route=routes(h,null);assert.equal((await route(new Request('https://example.com/training'))).status,303);assert.equal((await route(new Request('https://example.com/sheet-cleaner.html'))).status,303);assert.equal((await route(new Request('https://example.com/choose'))).status,200);assert.equal((await route(new Request('https://example.com/api/trial',{method:'POST',headers:{origin:'https://evil.test'}}))).status,403);
+test('Business cleaning is public while training access and cross-origin mutations remain protected',async()=>{
+  const h=harness(),route=routes(h,null);assert.equal((await route(new Request('https://example.com/training'))).status,303);assert.equal((await route(new Request('https://example.com/sheet-cleaner.html'))).status,200);assert.equal((await route(new Request('https://example.com/choose'))).status,200);assert.equal((await route(new Request('https://example.com/api/trial',{method:'POST',headers:{origin:'https://evil.test'}}))).status,403);
 });
 test('Regular cannot enter or record training work while business access works',async()=>{
   const h=harness(),a=await user(h);await h.billing.initializeCheckout(a,'regular_monthly');const c=await h.store.first('SELECT * FROM checkout_sessions');h.setPayment(c.reference,'regular_monthly');await h.billing.verifyCheckout(c.reference,a.id);

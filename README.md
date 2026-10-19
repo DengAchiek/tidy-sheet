@@ -1,8 +1,8 @@
 # TidySheet
 
-A subscription service for cleaning CSV and Excel files, with a landing page, ChatGPT sign-in, account dashboard, Paystack billing, and a browser-local cleaner. The navbar stays visible while scrolling.
+A browser-local CSV and Excel cleaner with direct, free access. The landing page's cleaning buttons open the uploader, where visitors can import, clean, review and export their own files without an account, trial or subscription. The navbar stays visible while scrolling.
 
-Start with a **$0, 7-day trial**, with no card required. **Regular is $10 USD/month** for business cleaning. **Premium is $20 USD/month or $240 USD/year** for business cleaning and training dataset preparation. A built-in business sample is available without signing in. The landing page and workspace chooser are public; customer workspaces require sign-in and entitlement checks.
+Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. Business cleaning is public on both Sites and the standalone Cloudflare Worker; accounts, billing records and training workspaces remain protected.
 
 ## Billing activation status
 
@@ -65,7 +65,7 @@ Browser QA covers account creation, access checks, the free sample, a synthetic 
 - `public/assets/`: browser-local business and training preparation engines, workers, styles, and bundled SheetJS library.
 - `.openai/hosting.json`: existing Site identity and D1 binding. No secrets.
 
-The full cleaner route is authorized server-side. Before each non-sample cleaning run, the browser also requests server authorization and records only row/column counts. Download controls recheck entitlement. **The cleaning engine is open-source client code**, so a user can self-host or reuse it; this subscription sells access to the hosted service, not an uncopyable algorithm. Browser-only execution cannot provide DRM over the cleaner itself.
+The business cleaner route is public and does not query account storage or billing. Its server-rendered session enables browser-local import, cleaning and export without authorization requests or activity uploads. The sample URL preloads example data but also allows visitors to use their own file. Training and account APIs retain authentication and entitlement checks. **The cleaning engine is open-source client code**; browser-only execution cannot provide DRM over it.
 
 ## Account and subscription behavior
 

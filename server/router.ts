@@ -15,7 +15,7 @@ export async function handleRequest(request:Request):Promise<Response>{
   try{
     if(path==='/api/billing/webhook'&&request.method==='POST')return json(await processWebhook(request));
     if(request.method==='POST')sameOrigin(request);
-    if(request.method==='GET'&&['/','/index.html'].includes(path)){const user=await getChatGPTUser();const {plans}=await safePlans();return html(landingPage(user,plans));}
+    if(request.method==='GET'&&['/','/index.html'].includes(path))return html(landingPage(await getChatGPTUser(),[]));
     if(request.method==='GET'&&path==='/choose')return html(choosePage(await getChatGPTUser()));
     if(request.method==='GET'&&path==='/training'){
       const user=await getChatGPTUser();if(!user)return redirect('/account');const account=await accountFor(user),sub=await subscriptionFor(user.userId),access=subscriptionAccess(account,sub,Date.now(),billingMode());
@@ -23,12 +23,7 @@ export async function handleRequest(request:Request):Promise<Response>{
     }
     if(request.method==='GET'&&path==='/privacy.html')return html(privacyPage(await getChatGPTUser()));
     if(request.method==='GET'&&['/cleaner','/sheet-cleaner.html'].includes(path)){
-      const user=await getChatGPTUser(),sample=url.searchParams.get('sample')==='1';
-      if(sample)return html(cleanerPage(user,{allowed:false,source:'sample'},true));
-      if(!user)return redirect('/account');
-      const account=await accountFor(user),subscription=await subscriptionFor(user.userId),access=subscriptionAccess(account,subscription,Date.now(),billingMode());
-      if(!access.allowed)return redirect('/account?access=required');
-      return html(cleanerPage(user,access,false));
+      return html(cleanerPage(await getChatGPTUser(),{allowed:true,business:true,training:false,source:'public'},false));
     }
     if(request.method==='GET'&&path==='/account'){
       const user=await getChatGPTUser(),{plans,notice:planNotice}=await safePlans();
