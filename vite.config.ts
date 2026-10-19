@@ -9,6 +9,10 @@ const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
 
 const { d1, r2 } = hostingConfig;
+const externalDatabaseId = process.env.TIDYSHEET_D1_DATABASE_ID?.trim() || "";
+if (externalDatabaseId && (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(externalDatabaseId) || externalDatabaseId === SITE_CREATOR_PLACEHOLDER_DATABASE_ID)) {
+  throw new Error("TIDYSHEET_D1_DATABASE_ID must be the ID of an existing Cloudflare D1 database.");
+}
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
@@ -17,12 +21,14 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 const localBindingConfig = {
   main: "./build/sites-worker.ts",
   compatibility_flags: ["nodejs_compat"],
+  ...(externalDatabaseId ? { vars: { TIDYSHEET_IDENTITY_MODE: "disabled" } } : {}),
   d1_databases: d1
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: externalDatabaseId ? "tidy-sheet-production" : "site-creator-d1",
+          database_id: externalDatabaseId || SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          migrations_dir: "drizzle",
         },
       ]
     : [],

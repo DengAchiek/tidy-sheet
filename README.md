@@ -16,7 +16,17 @@ Requires Node.js **22.13 or later** and npm. Python is no longer required.
 
 The Cloudflare toolchain is pinned together: Wrangler `4.151.2`, Workers types `5.20261019.1`, and Vite plugin `1.64.0`. Commit both `package.json` and `package-lock.json` when changing these versions, and use `npm run install:ci` (or `npm ci`) in build environments. Wrangler `4.151.2` requires Workers types `^5.20261019.1`; the older `4.20260515.1` pin causes npm `ERESOLVE` if Wrangler is upgraded alone. Resolve the package versions rather than using `--force` or `--legacy-peer-deps`.
 
-For Cloudflare Workers Builds, use `npm run build` as the build command and `npm run deploy` as the deploy command. The deploy script calls the installed Wrangler directly and passes `dist/server/wrangler.json`, avoiding framework auto-configuration and a separate latest-version install. The build must use the GitHub branch containing these dependency files; retrying an older commit keeps its old Workers types pin. Sites publication and GitHub pushes are separate operations. The generated Worker configuration has a placeholder D1 ID for local/Sites builds; a separately hosted Worker also needs its actual database binding and runtime identity configuration before production use.
+For Cloudflare Workers Builds, use `npm run build` as the build command and `npm run deploy` as the deploy command. The deploy script calls the installed Wrangler directly and passes `dist/server/wrangler.json`, avoiding framework auto-configuration and a separate latest-version install. The build must use the GitHub branch containing these dependency files; retrying an older commit keeps its old Workers types pin. Sites publication and GitHub pushes are separate operations.
+
+For a separate Cloudflare Worker, create a D1 database named `tidy-sheet-production` in the same account, then set the build variable `TIDYSHEET_D1_DATABASE_ID` to its actual database ID before building. The Vite configuration emits the real `DB` binding and points Wrangler migrations to `drizzle/`. Do not edit generated `dist/server/wrangler.json`; each build recreates it. Apply all pending schema migrations before deploying:
+
+```sh
+node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --remote --config dist/server/wrangler.json
+```
+
+This command needs a Cloudflare credential with D1 write access. The database can also be initialized through its dashboard SQL console using the existing migration files in order. Do not replay already applied migrations. Leave `TIDYSHEET_D1_DATABASE_ID` unset for local previews and Sites publication, where Sites provisions the hosted database. Local previews continue to use a placeholder ID with Wrangler's `--local` flag.
+
+Standalone builds also emit `TIDYSHEET_IDENTITY_MODE=disabled`: they cannot trust the Sites identity headers without its gateway. Public pages and the free sample remain available; private workspaces and account sign-in require a separately configured authentication provider. Sites publication keeps native ChatGPT sign-in.
 
 ```sh
 git clone https://github.com/DengAchiek/tidy-sheet.git

@@ -1,6 +1,7 @@
 declare namespace Cloudflare {
   interface Env {
     DB?: D1Database;
+    TIDYSHEET_IDENTITY_MODE?: "disabled";
     BUCKET?: R2Bucket;
     PAYSTACK_SECRET_KEY?:string;
     PAYSTACK_REGULAR_PLAN_CODE?:string;
