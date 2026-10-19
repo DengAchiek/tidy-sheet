@@ -1,212 +1,71 @@
 'use strict';
-(() => {
-  const $=id=>document.getElementById(id), C=window.TidyCore, PAGE_SIZE=50;
-  const session=JSON.parse(document.getElementById('tidysheet-session')?.textContent||'{"sampleOnly":true}');
-  const sampleOnly=session.sampleOnly===true;
-  async function authorize(rows,columns){
-    if(sampleOnly)return;
-    const response=await fetch('/api/usage/clean',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),rows,columns})});
-    const data=await response.json();if(!response.ok)throw Error(data.message||'Sign in and check your subscription to continue.');
-  }
-  async function authorizeDownload(){
-    if(sampleOnly)return true;
-    try{const r=await fetch('/api/session',{credentials:'same-origin',cache:'no-store'}),s=await r.json();if(!r.ok||!s.access?.allowed)throw Error('Your access has ended. Open Account & billing to continue.');return true;}catch(e){message(e.message);return false;}
-  }
+(()=>{
+  const $=id=>document.getElementById(id),C=window.TidyCore,B=window.TidyBusiness;
+  const session=JSON.parse($('tidysheet-session')?.textContent||'{"sampleOnly":true}'),sampleOnly=session.sampleOnly===true;
   const SAMPLE=`Customer Name,Phone,Email,Signup Date,Amount,Customer ID\n  john   kamau ,0712345678,John.Kamau@Gmail.com,05/03/2024,"KES 12,500",00127\nJOHN KAMAU,+254 712 345 678,john.kamau@gmail.com,2024-03-05,12500,00127\nmary WANJIRU,0722-111-222,mary.w@@yahoo.com,12 Jan 2024,Ksh 3400,00128\n,,,,,\npeter otieno,254733987654,peter@otieno.co.ke,31/02/2024,N/A,00129\nAisha  mohamed,0110 123 456,aisha@mail,3 Feb 2024,"8,000",00130\nBrian O'neil,12345,brian@corp.com,15-07-2024,950.50,00131\nGrace Njeri,0799888777,grace@example.com,2024-06-20,"KES 4,250.00",00132`;
-  let worker=null, workbookReady=false, sequence=0, pending=new Map(), busy=false, currentFile=null, matrix=[], sheets=[], model=null, original=null, result=null, types=[], keys=[], edits=[], view='original', page=0, activeIssue=null, searchTimer;
-  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-  const fmt=n=>n.toLocaleString();
+  const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])),fmt=n=>Number(n).toLocaleString(),percent=n=>Number(n).toLocaleString(undefined,{maximumFractionDigits:1})+'%';
+  let operationEpoch=0,importedSample=false;
+  let worker,sequence=0,pending=new Map(),busy=false,loaded=null,currentFile=null,result=null,business=null,view='original',page=0,pageGeneration=0,ready=false,restorePromise=null,searchTimer,activeIssue=null,activePair=null,edits=[],merges=[],ignored=new Set(),suggestionPage=0,importStarted=0,importMs=0,cleanMs=0,exports=0,firstExport=null;
+  const storageKey='tidysheet.templates.v1.'+(session.storageKey||'sample');
   function message(text,kind='error'){$('message').textContent=text;$('message').className='notice global-notice '+kind;$('message').hidden=!text;}
-  function ensureWorker(){
-    if(worker)return worker;
-    worker=new Worker('assets/worker.js?v=2.2.0');
-    worker.onmessage=({data})=>{
-      const job=pending.get(data.id);if(!job)return;
-      if(data.progress!==undefined){$('busyText').textContent='Standardizing your spreadsheet… '+data.progress+'%';return;}
-      pending.delete(data.id);data.error?job.reject(Error(data.error)):job.resolve(data.result);
-    };
-    worker.onerror=()=>{const error=Error('The cleaner could not start. Reload the page and try again.');for(const p of pending.values())p.reject(error);pending.clear();worker.terminate();worker=null;};
-    return worker;
+  function ensureWorker(){if(worker)return worker;worker=new Worker('/assets/worker.js?v=3.0.0');worker.onmessage=({data})=>{const job=pending.get(data.id);if(!job)return;if(data.progress!==undefined){$('busyText').textContent=(data.label||'Processing spreadsheet')+'… '+data.progress+'%';return;}pending.delete(data.id);data.error?job.reject(Error(data.error)):job.resolve(data.result);};worker.onerror=()=>{for(const p of pending.values())p.reject(Error('The processing worker stopped. Try a smaller file or retry.'));pending.clear();worker.terminate();worker=null;ready=false;};return worker;}
+  function request(action,payload={}){return new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});try{ensureWorker().postMessage({id,action,...payload});}catch(error){pending.delete(id);reject(error);}});}
+  function lock(value,label='Working…'){busy=value;$('busy').hidden=!value;$('busyText').textContent=label;document.querySelectorAll('#workspace button,#workspace input,#workspace select,#workspace textarea,#sample,#browse').forEach(el=>el.disabled=value);if(!value){$('tabCleaned').disabled=!result;$('tabIssues').disabled=!result;$('undoMerge').disabled=!merges.length;}}
+  function record(operation,outcome,durationMs){if(sampleOnly||importedSample||!loaded)return;fetch('/api/activity',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),operation,outcome,durationMs:Math.max(0,Math.round(durationMs)),rows:loaded.rowCount,columns:loaded.headers.length,timeToExportMs:operation==='export'&&exports===1&&firstExport!==null?Math.round(firstExport):null})}).catch(()=>{});}
+  async function authorize(){if(sampleOnly)return;const epoch=operationEpoch;const response=await fetch('/api/usage/clean',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),rows:loaded.rowCount,columns:loaded.headers.length})}),body=await response.json();if(epoch!==operationEpoch)throw Error('Cancelled');if(!response.ok)throw Error(body.message||'Open Account & billing to continue.');}
+  async function downloadAccess(){if(sampleOnly)return;const epoch=operationEpoch;const response=await fetch('/api/session',{credentials:'same-origin',cache:'no-store'}),body=await response.json();if(epoch!==operationEpoch)throw Error('Cancelled');if(!response.ok||!body.access?.allowed)throw Error('Your access has ended. Open Account & billing to continue.');}
+  async function work(label,fn,operation){if(busy)return;message('');lock(true,label);const start=performance.now();try{await fn();}catch(error){if(error.message!=='Cancelled'){message(error.message);if(operation)record(operation,'failure',performance.now()-start);}else if(operation)record(operation,'cancelled',performance.now()-start);}finally{lock(false);}}
+  async function ensureData(){if(ready)return;if(!currentFile)throw Error('Import a file first.');if(restorePromise)return restorePromise;restorePromise=(async()=>{const sheet=$('sheetSelect').value;let data=await request('import',{file:currentFile,session:true,hasHeader:$('hasHeader').checked});if(sheet&&sheet!==data.sheet)data=await request('sheet',{name:sheet,session:true,hasHeader:$('hasHeader').checked});if(edits.length||merges.length)await request('restoreSession',{edits,merges});ready=true;})();try{await restorePromise;}finally{restorePromise=null;}}
+  function invalidate(render=true){result=null;view='original';page=0;pageGeneration++;$('tabCleaned').disabled=true;$('tabIssues').disabled=true;$('issueCount').textContent='';['exportPanel','exportNote','legend','reviewNotice','businessResults'].forEach(id=>$(id).hidden=true);$('settingsHint').textContent='Clean again to apply your current rules.';if(loaded){renderStats();if(render)renderTable();}}
+  function parseMappings(text){return text.split('\n').map(s=>s.trim()).filter(Boolean).map(line=>{const parts=line.split('=>');if(parts.length!==2)throw Error('Write each category mapping as source => destination, one per line.');return {from:parts[0].trim(),to:parts[1].trim()};});}
+  function readBusiness(){
+    document.querySelectorAll('[data-field]').forEach(el=>{const f=business.fields[Number(el.dataset.column)],key=el.dataset.field;f[key]=key==='key'?el.checked:key==='mapping'?parseMappings(el.value):key==='allowed'?el.value.split('\n').map(v=>v.trim()).filter(Boolean):el.value;});
+    business.fuzzy={enabled:$('fuzzyEnabled').checked,column:Number($('fuzzyColumn').value),scope:Number($('fuzzyScope').value),threshold:Number($('fuzzyThreshold').value)};
+    business.insights={enabled:$('insightsConfirmed').checked,id:Number($('insightId').value),date:Number($('insightDate').value),amount:Number($('insightAmount').value),category:Number($('insightCategory').value),currencyColumn:Number($('insightCurrencyColumn').value),currency:$('insightCurrency').value.trim().toUpperCase(),unit:$('insightUnit').value};
+    business.crossRules=Array.from(document.querySelectorAll('[data-rule-row]')).map(row=>{const rule={kind:row.dataset.kind};row.querySelectorAll('[data-rule-key]').forEach(el=>rule[el.dataset.ruleKey]=['severity'].includes(el.dataset.ruleKey)?el.value:Number(el.value));return rule;});return business;
   }
-  function request(action,payload={}){return new Promise((resolve,reject)=>{try{const id=++sequence;pending.set(id,{resolve,reject});ensureWorker().postMessage({id,action,...payload});}catch(e){pending.delete(sequence);reject(e);}});}
-  function setBusy(value,label='Working…',canCancel=true){
-    busy=value;$('busy').hidden=!value;$('busyText').textContent=label;$('cancel').hidden=!canCancel;
-    document.querySelectorAll('#run,#sample,#browse,#newFile,#hasHeader,#sheetSelect,#downloadXlsx,#downloadCsv,#downloadLog,#downloadNullReport,.type-select,.key-check,#dateOrder,#trim,#titleCase,#nulls,#removeEmpty,#removeDuplicates,#caseInsensitive,#dropInvalid').forEach(el=>el.disabled=value);
+  function config(){const b=readBusiness();return {business:b,types:b.fields.map(f=>f.type),keys:b.fields.flatMap((f,i)=>f.key?[i]:[]),dateOrder:$('dateOrder').value,...Object.fromEntries(['trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'].map(id=>[id,$(id).checked]))};}
+  function options(selected=-1){return '<option value="-1">None / choose column</option>'+loaded.headers.map((h,i)=>`<option value="${i}"${i===selected?' selected':''}>${esc(h)}</option>`).join('');}
+  function renderFields(){
+    $('columns').innerHTML=business.fields.map((f,i)=>`<div class="column-config"><label class="field"><span>${esc(f.name)}</span><select data-field="type" data-column="${i}" aria-label="Type for ${esc(f.name)}">${Object.entries(C.TYPES).map(([key,label])=>`<option value="${key}"${f.type===key?' selected':''}>${esc(label)}</option>`).join('')}</select></label><span class="example">e.g. ${esc(loaded.examples[i]||'—')}</span><label class="checkbox-label"><input data-field="key" data-column="${i}" type="checkbox"${f.key?' checked':''}>Use as duplicate key</label><details class="column-rules"><summary>Missing values & business rules</summary><label class="field">Missing value policy<select data-field="missing" data-column="${i}" aria-label="Missing value policy for ${esc(f.name)}">${[['optional','Allow missing'],['review','Required — flag for review'],['drop','Remove row when missing'],['fill','Fill with chosen value']].map(([k,label])=>`<option value="${k}"${f.missing===k?' selected':''}>${label}</option>`).join('')}</select></label><label class="field">Replacement (fill policy only)<input data-field="fill" data-column="${i}" value="${esc(f.fill)}" maxlength="1000"></label><div class="rule-two"><label class="field">Minimum<input data-field="min" data-column="${i}" type="number" step="any" value="${esc(f.min)}"></label><label class="field">Maximum<input data-field="max" data-column="${i}" type="number" step="any" value="${esc(f.max)}"></label></div><label class="field">Allowed categories (one per line)<textarea data-field="allowed" data-column="${i}" rows="2">${esc(f.allowed.join('\n'))}</textarea></label><label class="field">Category mappings (source =&gt; destination)<textarea data-field="mapping" data-column="${i}" rows="2" placeholder="Nai => Nairobi">${esc(f.mapping.map(e=>e.from+' => '+e.to).join('\n'))}</textarea></label></details></div>`).join('');
   }
-  function invalidate(){
-    if(!result)return;
-    result=null;$('tabCleaned').disabled=true;$('tabIssues').disabled=true;$('issueCount').textContent='';$('exportPanel').hidden=true;$('exportNote').hidden=true;$('legend').hidden=true;$('reviewNotice').hidden=true;
-    $('settingsHint').textContent='Settings changed. Clean again to update results.';
-    $('resultSummary').textContent='Settings changed. Clean again to see fresh results.';view='original';page=0;renderStats();renderTable();
+  function renderRules(){$('crossRules').innerHTML=business.crossRules.map((r,i)=>`<div data-rule-row data-kind="${r.kind}" class="cross-rule"><strong>${r.kind==='dateOrder'?'Date order':'Quantity × price = total'}</strong>${(r.kind==='dateOrder'?[['start','Earlier date'],['end','Later date']]:[['qty','Quantity'],['price','Unit price'],['total','Total']]).map(([key,label])=>`<label class="field">${label}<select data-rule-key="${key}">${options(r[key])}</select></label>`).join('')}${r.kind==='total'?`<label class="field">Allowed difference<input data-rule-key="tolerance" type="number" step="any" min="0" value="${r.tolerance}"></label>`:''}<label class="field">Severity<select data-rule-key="severity"><option value="error"${r.severity==='error'?' selected':''}>Error</option><option value="warning"${r.severity==='warning'?' selected':''}>Warning</option></select></label><button class="text-button" data-remove-rule="${i}" type="button">Remove check</button></div>`).join('')||'<p class="help">Add checks that match your business. Rows with failed checks stay available for review.</p>';}
+  function renderBusiness(){$('businessTemplate').value=Object.hasOwn(B.templates,business.kind)?business.kind:'general';renderFields();renderRules();const f=business.fuzzy,n=business.insights;$('fuzzyEnabled').checked=f.enabled;$('fuzzyColumn').innerHTML=options(f.column);$('fuzzyScope').innerHTML=options(f.scope);$('fuzzyThreshold').value=f.threshold;$('insightsConfirmed').checked=n.enabled;for(const [id,key] of [['insightId','id'],['insightDate','date'],['insightAmount','amount'],['insightCategory','category'],['insightCurrencyColumn','currencyColumn']])$(id).innerHTML=options(n[key]);$('insightCurrency').value=n.currency;$('insightUnit').value=n.unit;$('removeDuplicates').checked=business.removeDuplicates;}
+  function refreshSaved(){let list=[];try{list=JSON.parse(localStorage.getItem(storageKey)||'[]');if(!Array.isArray(list))list=[];}catch{}$('savedTemplate').innerHTML='<option value="">Saved on this device…</option>'+list.map((r,i)=>`<option value="${i}">${esc(r.name)}</option>`).join('');return list;}
+  function applyConfig(c){business=c.business;for(const id of ['trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'])$(id).checked=c[id]===true;$('dateOrder').value=c.dateOrder==='MDY'?'MDY':'DMY';renderBusiness();$('removeDuplicates').checked=c.removeDuplicates;invalidate();}
+  async function importFile(file,sample=false){if(sampleOnly&&!sample){message('Start a free trial to use your own files.');return;}if(!/\.(csv|tsv|xlsx|xls)$/i.test(file.name)){message('Choose a CSV, TSV, XLSX, or XLS file.');return;}if(file.size>C.LIMITS.bytes){message('Choose a file up to 20 MB.');return;}
+    await work('Reading your spreadsheet…',async()=>{const start=performance.now(),data=await request('import',{file,session:true,hasHeader:$('hasHeader').checked});currentFile=file;loaded=data;importedSample=sample;ready=true;edits=[];merges=[];ignored.clear();importStarted=start;importMs=performance.now()-start;cleanMs=0;exports=0;firstExport=null;$('sheetSelect').innerHTML=data.sheets.map(s=>`<option${s===data.sheet?' selected':''}>${esc(s)}</option>`).join('');$('sheetField').hidden=!data.sheets.length;setup();record('import','success',importMs);},'import');$('file').value='';
   }
-  function config(){return {types:types.slice(),keys:keys.map((v,i)=>v?i:-1).filter(i=>i>=0),dateOrder:$('dateOrder').value,...Object.fromEntries(['trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'].map(id=>[id,$(id).checked]))};}
-  function refreshModel(){
-    model=C.prepare(matrix,$('hasHeader').checked);original={...model,rows:model.rows.map(r=>r.slice()),nullAnalysis:C.analyzeNulls(model)};
-    types=model.headers.map(C.guess);keys=types.map(()=>false);edits=[];result=null;view='original';page=0;
-    $('columns').innerHTML=model.headers.map((h,i)=>`<div class="column-config"><label class="field"><span title="${esc(h)}">${esc(h)}</span><select class="type-select" data-column="${i}" aria-label="Type for ${esc(h)}">${Object.entries(C.TYPES).map(([k,v])=>`<option value="${k}"${types[i]===k?' selected':''}>${esc(v)}</option>`).join('')}</select></label><span class="example" title="${esc(model.rows[0]?.[i])}">e.g. ${esc(model.rows[0]?.[i]||'—')}</span><label class="checkbox-label"><input class="key-check" data-column="${i}" type="checkbox">Use as duplicate key</label></div>`).join('');
-    $('fileName').textContent=currentFile.name;$('fileExt').textContent=currentFile.name.split('.').at(-1).toUpperCase();
-    $('fileMeta').textContent=fmt(model.rows.length)+' data rows · '+fmt(model.headers.length)+' columns · '+(currentFile.size/1024).toFixed(1)+' KB';
-    $('importWarnings').textContent=model.warnings.join(' ');$('importWarnings').hidden=!model.warnings.length;
-    $('workspace').hidden=false;$('uploadView').hidden=true;
-    $('sheetField').hidden=sheets.length<1;
-    $('tabCleaned').disabled=true;$('tabIssues').disabled=true;$('issueCount').textContent='';$('exportPanel').hidden=true;$('exportNote').hidden=true;$('legend').hidden=true;$('reviewNotice').hidden=true;
-    $('settingsHint').textContent='Your original file stays untouched.';$('resultSummary').textContent='Confirm the column types, then clean your spreadsheet.';
-    $('search').value='';$('rowFilter').value='all';updateKeys();renderStats();renderTable();
-  }
-  async function importFile(file,isSample=false){
-    if(busy)return;
-    if(sampleOnly&&!isSample){message('The free sample uses sample data only. Get Premium to clean your own files.');return;}
-    if(!/\.(csv|tsv|xlsx|xls)$/i.test(file.name)){message('Choose a CSV, TSV, XLSX, or XLS file.');return;}
-    if(file.size>C.LIMITS.bytes){message('This file is over 20 MB. Split it into smaller files.');return;}
-    message('');setBusy(true,'Opening your spreadsheet…');workbookReady=false;
-    try{
-      const data=await request('import',{file});
-      // Validate before replacing a working workspace.
-      C.prepare(data.matrix,$('hasHeader').checked);
-      currentFile=file;matrix=data.matrix;sheets=data.sheets;workbookReady=true;
-      $('sheetSelect').innerHTML=sheets.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');$('sheetSelect').value=data.sheet;$('sheetSelect').dataset.loaded=data.sheet||'';
-      refreshModel();
-    }catch(e){if(e.message!=='Cancelled')message(e.message);}
-    finally{setBusy(false);$('file').value='';}
-  }
-  function updateKeys(){const chosen=keys.map((v,i)=>v?model.headers[i]:null).filter(Boolean);$('keyHint').textContent=chosen.length?'Matching on: '+chosen.join(', ')+'. First matching row kept; blank or invalid keys are excluded.':'No keys selected: compare the whole row. The first matching row is kept.';}
-  async function runClean(){
-    if(busy||!model)return;message('');setBusy(true,'Standardizing your spreadsheet…');
-    try{
-      await authorize(model.rows.length,model.headers.length);
-      result=await request('clean',{model,config:config()});result.audit.unshift(...edits);
-      $('tabCleaned').disabled=false;$('tabIssues').disabled=false;$('issueCount').textContent=result.issues.length?'('+fmt(result.issues.length)+')':'';
-      $('exportPanel').hidden=false;$('exportNote').hidden=false;$('settingsHint').textContent='All set. You can adjust the rules and clean again.';
-      const s=result.stats;
-      $('resultSummary').textContent=`${fmt(s.input)} input rows → ${fmt(s.output)} kept · ${fmt(s.duplicates)} duplicates, ${fmt(s.empty)} empty, ${fmt(s.dropped)} invalid rows removed. ${fmt(s.invalid)} invalid cells found across the input.`;
-      $('reviewNotice').hidden=!s.review;$('reviewNotice').textContent=`${fmt(s.review)} retained ${s.review===1?'row needs':'rows need'} review. Open Issues to correct flagged values, then download your results.`;
-      view='cleaned';page=0;$('rowFilter').value='all';$('search').value='';renderStats();renderTable();
-      $('cleanSuccessSummary').textContent=`${fmt(s.output)} ${s.output===1?'row is':'rows are'} ready to review and download.${s.review?` ${fmt(s.review)} ${s.review===1?'row still needs':'rows still need'} review in Issues.`:''}`;
-      $('cleanSuccessDialog').showModal();
-    }catch(e){if(e.message!=='Cancelled')message(e.message);}
-    finally{setBusy(false);}
-  }
-  function renderStats(){
-    const s=result?.stats;
-    const stats=s?[['Rows kept',s.output,fmt(s.input)+' rows imported',''],['Values standardized',s.changed,'Across all input rows','green'],['Duplicates removed',s.duplicates,'First matching record kept',''],['Rows to review',s.review,'Retained rows with invalid cells',s.review?'alert':'']]:[['Imported rows',model.rows.length,'Ready to clean',''],['Columns',model.headers.length,'Confirm each column type',''],['Duplicate matching',keys.filter(Boolean).length,keys.some(Boolean)?'Selected key columns':'Comparing the whole row',''],['Status','Ready','Choose rules, then clean','green']];
-    $('stats').innerHTML=stats.map(([label,n,detail,cls])=>`<div class="stat ${cls}"><span class="stat-label">${esc(label)}</span><strong>${typeof n==='number'?fmt(n):n}</strong><span class="stat-detail">${esc(detail)}</span></div>`).join('');
-    renderNullAnalysis();
-  }
-  function renderNullAnalysis(){
-    const before=original.nullAnalysis,after=result?.nullAnalysis;
-    const percent=n=>n.toLocaleString(undefined,{maximumFractionDigits:1})+'%';
-    $('nullBeforeCount').textContent=fmt(before.missing);
-    $('nullBeforeDetail').textContent=`${percent(before.percentage)} of ${fmt(before.cellCount)} cells · ${fmt(before.rowCount)} rows`;
-    $('nullAfterCount').textContent=after?fmt(after.missing):'—';
-    $('nullAfterDetail').textContent=after?`${percent(after.percentage)} of ${fmt(after.cellCount)} cells · ${fmt(after.rowCount)} rows`:'Clean your spreadsheet to compare.';
-    $('nullRowsCount').textContent=after?`${fmt(before.rowsWithMissing)} → ${fmt(after.rowsWithMissing)}`:fmt(before.rowsWithMissing);
-    $('nullRowsDetail').textContent=after?`${fmt(before.completeRows)} complete rows before · ${fmt(after.completeRows)} after`:`${fmt(before.completeRows)} of ${fmt(before.rowCount)} rows are complete`;
-    $('nullAnalysisRows').innerHTML=before.columns.map((column,i)=>{
-      const cleaned=after?.columns[i];
-      return `<tr><th scope="row">${esc(column.name)}</th><td>${fmt(column.blank)}</td><td>${fmt(column.markers)}</td><td>${fmt(column.missing)} <span class="muted">(${percent(column.percentage)})</span></td><td>${cleaned?`${fmt(cleaned.missing)} <span class="muted">(${percent(cleaned.percentage)})</span>`:'—'}</td></tr>`;
-    }).join('');
-    $('nullAnalysisNote').textContent=after?'Before uses all imported rows; after uses the retained cleaned rows. Counts include null markers even when their conversion is off. Cleaning does not fill missing values.':'Counts include blank and whitespace-only cells, plus N/A, NA, null, none, nil, undefined, and dashes. Zero and false are values.';
-  }
-  function filteredRows(){
-    const query=$('search').value.trim().toLowerCase(),filter=$('rowFilter').value;
-    if(view==='issues')return result.issues.map((r,i)=>i).filter(i=>{const r=result.issues[i];return (!query||Object.values(r).some(v=>String(v).toLowerCase().includes(query)))&&(filter!=='invalid'||/review|invalid/i.test(r.action));});
-    const data=view==='original'?original.rows:result.rows;
-    const indices=[];for(let i=0;i<data.length;i++){
-      if(query&&!data[i].some(v=>v.toLowerCase().includes(query)))continue;
-      if(view==='cleaned'&&filter==='invalid'&&!result.flags[i].some(Boolean))continue;
-      if(view==='cleaned'&&filter==='changed'&&!result.changed[i].some(Boolean))continue;
-      indices.push(i);
-    }return indices;
-  }
-  function renderTable(){
-    if(!model)return;
-    ['Original','Cleaned','Issues'].forEach(v=>$('tab'+v).setAttribute('aria-pressed',String(view===v.toLowerCase())));
-    $('previewTitle').textContent=view==='issues'?'Issues to review':view==='cleaned'?'Cleaned data':'Preview';
-    $('rowFilter').disabled=view==='original';$('rowFilter').querySelector('[value="changed"]').disabled=view==='issues';
-    if(view==='issues'&&$('rowFilter').value==='changed')$('rowFilter').value='all';
-    $('legend').hidden=view!=='cleaned';
-    const indices=filteredRows(),count=indices.length,pages=Math.max(1,Math.ceil(count/PAGE_SIZE));page=Math.max(0,Math.min(page,pages-1));
-    const visible=indices.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
-    const headers=view==='issues'?['Source row','Column','Original value','Detail','Action','']:['Source row',...model.headers];
-    let html='<thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>';
-    for(const i of visible){
-      if(view==='issues'){
-        const item=result.issues[i],editable=/review|invalid/i.test(item.action)&&model.headers.includes(item.column);
-        html+=`<tr><td class="row-number">${item.row}</td><td>${esc(item.column)}</td><td class="issue-value" title="${esc(item.original)}">${esc(item.original||'—')}</td><td class="issue-detail">${esc(item.issue)}</td><td>${esc(item.action)}</td><td>${editable?`<button class="edit-btn" data-issue="${i}" type="button" aria-label="Edit source row ${item.row}, ${esc(item.column)}">Review ↗</button>`:''}</td></tr>`;
-      }else{
-        const data=view==='original'?original.rows:result.rows, source=view==='original'?original.sourceRows:result.sourceRows;
-        html+='<tr><td class="row-number">'+source[i]+'</td>'+data[i].map((v,j)=>{const cls=view==='cleaned'?(result.flags[i][j]?'invalid':result.changed[i][j]?'changed':''):'';return `<td class="${cls}" title="${esc(v)}">${esc(v||'')}</td>`;}).join('')+'</tr>';
-      }
-    }
-    $('table').innerHTML=html+'</tbody>';$('tableEmpty').hidden=count!==0;
-    $('tableEmpty').textContent=view==='issues'&&!result.issues.length?'No issues found. Looking tidy!':view==='cleaned'&&!result.rows.length?'No rows remain after cleaning. Adjust your rules or download the change log.':'No matching rows.';
-    $('tableCount').textContent=fmt(count)+(view==='issues'?' events':' rows');
-    $('pageInfo').textContent=count?`${fmt(page*PAGE_SIZE+1)}–${fmt(Math.min((page+1)*PAGE_SIZE,count))} of ${fmt(count)} · source row numbers shown`:'0 results';
-    $('pageNumber').textContent=(page+1)+' / '+pages;$('prev').disabled=page===0;$('next').disabled=page>=pages-1;
-  }
-  function download(blob,suffix){const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=currentFile.name.replace(/\.[^.]+$/,'')+suffix;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
-  function csvDownload(rows,suffix){download(new Blob([C.toCSV(rows)],{type:'text/csv;charset=utf-8'}),suffix);}
-  $('browse').onclick=()=>$('file').click();$('file').onchange=e=>{if(e.target.files[0])importFile(e.target.files[0]);};
-  $('sample').onclick=()=>importFile(new File([SAMPLE],'sample_customers.csv',{type:'text/csv'}),true);
-  $('drop').ondragover=e=>{e.preventDefault();if(!busy)$('drop').classList.add('dragging');};
-  $('drop').ondragleave=()=>$('drop').classList.remove('dragging');
-  $('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('dragging');if(e.dataTransfer.files.length>1){message('Choose one file at a time.');return;}if(e.dataTransfer.files[0])importFile(e.dataTransfer.files[0]);};
-  // Prevent a dropped file from navigating away from the workspace.
-  window.addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();});
-  window.addEventListener('drop',e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();});
-  $('columns').onchange=e=>{const i=Number(e.target.dataset.column);if(e.target.matches('.type-select'))types[i]=e.target.value;if(e.target.matches('.key-check'))keys[i]=e.target.checked;invalidate();updateKeys();renderStats();};
-  ['dateOrder','trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'].forEach(id=>$(id).onchange=invalidate);
-  $('hasHeader').onchange=()=>{try{refreshModel();message('');}catch(e){$('hasHeader').checked=!$('hasHeader').checked;message(e.message);}};
-  $('sheetSelect').onchange=async()=>{
-    if(busy)return;message('');setBusy(true,'Opening worksheet…');
-    const previous=$('sheetSelect').dataset.loaded;
-    try{if(!workbookReady){await request('import',{file:currentFile});workbookReady=true;}const data=await request('sheet',{name:$('sheetSelect').value});C.prepare(data.matrix,$('hasHeader').checked);matrix=data.matrix;refreshModel();$('sheetSelect').dataset.loaded=data.sheet;}
-    catch(e){if(previous)$('sheetSelect').value=previous;message(e.message);}
-    finally{setBusy(false);}
-  };
-  $('run').onclick=runClean;
-  ['original','cleaned','issues'].forEach(v=>$('tab'+v[0].toUpperCase()+v.slice(1)).onclick=()=>{view=v;page=0;renderTable();});
-  $('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page=0;renderTable();},160);};
-  $('rowFilter').onchange=()=>{page=0;renderTable();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};
-  $('downloadCsv').onclick=async()=>{if(result&&await authorizeDownload())csvDownload([model.headers,...result.rows],'_cleaned.csv');};
-  $('downloadNullReport').onclick=async()=>{if(original&&await authorizeDownload())csvDownload(C.nullReportRows(original.nullAnalysis,result?.nullAnalysis),'_null_analysis.csv');};
-  $('downloadLog').onclick=async()=>{if(!result||!await authorizeDownload())return;const entries=result.audit.length?result.audit:[{row:'',column:'',original:'',cleaned:'',issue:'No changes or issues found',action:'No change'}];csvDownload([['Source row','Column','Original value','Cleaned value','Detail','Action'],...entries.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action])],'_change_log.csv');};
-  $('downloadXlsx').onclick=async()=>{
-    if(!result||busy||!await authorizeDownload())return;message('');setBusy(true,'Preparing your Excel download…');
-    try{const buffer=await request('xlsx',{headers:model.headers,result,types,nullBefore:original.nullAnalysis});download(new Blob([buffer],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}),'_cleaned.xlsx');}
-    catch(e){if(e.message!=='Cancelled')message(e.message);}
-    finally{setBusy(false);}
-  };
-  $('table').onclick=e=>{
-    const button=e.target.closest('[data-issue]');if(!button||busy)return;
-    activeIssue=result.issues[Number(button.dataset.issue)];
-    $('editContext').textContent='Source row '+activeIssue.row+' · '+activeIssue.column;$('editReason').textContent=activeIssue.issue;
-    const ri=model.sourceRows.indexOf(activeIssue.row),ci=model.headers.indexOf(activeIssue.column);
-    $('editValue').value=model.rows[ri][ci];$('editDialog').showModal();$('editValue').focus();
-  };
-  $('closeDialog').onclick=()=>$('editDialog').close();
-  $('editForm').onsubmit=async e=>{
-    e.preventDefault();if(!activeIssue)return;
-    const ri=model.sourceRows.indexOf(activeIssue.row),ci=model.headers.indexOf(activeIssue.column),value=$('editValue').value;
-    if(value!==model.rows[ri][ci]){edits.push({row:activeIssue.row,column:activeIssue.column,original:model.rows[ri][ci],cleaned:value,issue:'Manual correction in review',action:'Manually corrected'});model.rows[ri][ci]=value;}
-    $('editDialog').close();activeIssue=null;await runClean();if(result){view='issues';renderTable();}
-  };
-  function restartWorker(){if(worker)worker.terminate();worker=null;workbookReady=false;for(const p of pending.values())p.reject(Error('Cancelled'));pending.clear();}
-  $('cancel').onclick=()=>{
-    restartWorker();message('Operation cancelled. Existing source data is still available.','');
-  };
-  $('newFile').onclick=()=>$('resetDialog').showModal();$('keepWorkspace').onclick=()=>$('resetDialog').close();
-  $('clearWorkspace').onclick=()=>{
-    restartWorker();clearTimeout(searchTimer);currentFile=null;matrix=[];sheets=[];model=null;original=null;result=null;types=[];keys=[];edits=[];activeIssue=null;
-    $('workspace').hidden=true;$('uploadView').hidden=false;$('resetDialog').close();
-    ['hasHeader','trim','titleCase','nulls','removeEmpty','removeDuplicates','caseInsensitive','dropInvalid'].forEach(id=>$(id).checked=$(id).defaultChecked);
-    $('dateOrder').value='DMY';$('search').value='';$('editValue').value='';$('file').value='';
-    ['columns','table','stats','sheetSelect','fileName','fileMeta','editContext','editReason'].forEach(id=>$(id).replaceChildren());
-    message('');setBusy(false);
-  };
-  // No storage is used. Warn only when a tab contains manual corrections.
-  window.addEventListener('beforeunload',e=>{if(edits.length){e.preventDefault();e.returnValue='';}});
-  if(location.protocol==='file:')message('For local use, open this project with npm start and visit http://127.0.0.1:4173. Browser workers require an HTTP server.');
-  else if(sampleOnly||new URLSearchParams(location.search).has('sample'))$('sample').click();
-  if(sampleOnly){$('browse').hidden=true;$('newFile').onclick=()=>location.assign('/account');$('newFile').textContent='Use my own file ↗';}
+  function setup(){business=B.defaults(loaded.headers);$('businessTemplate').value='general';$('fileName').textContent=currentFile.name;$('fileExt').textContent=currentFile.name.split('.').at(-1).toUpperCase();$('fileMeta').textContent=fmt(loaded.rowCount)+' data rows · '+loaded.headers.length+' columns · '+(currentFile.size/1024).toFixed(1)+' KB';$('importWarnings').textContent=loaded.warnings.join(' ');$('importWarnings').hidden=!loaded.warnings.length;$('workspace').hidden=false;$('uploadView').hidden=true;renderBusiness();refreshSaved();invalidate();}
+  function renderStats(){const s=result?.stats,items=s?[['Rows kept',s.output],['Values standardized',s.changed],['Duplicates removed',s.duplicates+(s.merged||0)],['Rows to review',s.review]]:[['Imported rows',loaded.rowCount],['Columns',loaded.headers.length],['Business template',B.templates[business.kind]||'Saved template'],['Status','Ready']];$('stats').innerHTML=items.map(([label,n])=>`<div class="stat"><span class="stat-label">${label}</span><strong>${typeof n==='number'?fmt(n):esc(n)}</strong></div>`).join('');$('resultSummary').textContent=s?`${fmt(s.input)} rows imported → ${fmt(s.output)} kept · ${fmt(s.empty)} empty, ${fmt(s.dropped)} invalid, ${fmt(s.businessDropped||0)} missing-policy rows removed · ${fmt(s.merged||0)} reviewed merges.`:'Review your rules, then clean the spreadsheet.';renderNull();renderMetrics();}
+  function renderNull(){const before=loaded.nullAnalysis,after=result?.nullAnalysis;$('nullBeforeCount').textContent=fmt(before.missing);$('nullBeforeDetail').textContent=`${percent(before.percentage)} of ${fmt(before.cellCount)} cells · ${fmt(before.rowCount)} rows`;$('nullAfterCount').textContent=after?fmt(after.missing):'—';$('nullAfterDetail').textContent=after?`${percent(after.percentage)} of ${fmt(after.cellCount)} cells · ${fmt(after.rowCount)} rows`:'Clean your spreadsheet to compare.';$('nullRowsCount').textContent=after?`${fmt(before.rowsWithMissing)} → ${fmt(after.rowsWithMissing)}`:fmt(before.rowsWithMissing);$('nullRowsDetail').textContent=after?`${fmt(before.completeRows)} complete rows before · ${fmt(after.completeRows)} after`:`${fmt(before.completeRows)} of ${fmt(before.rowCount)} rows complete`;$('nullAnalysisRows').innerHTML=before.columns.map((c,i)=>`<tr><th scope="row">${esc(c.name)}</th><td>${fmt(c.blank)}</td><td>${fmt(c.markers)}</td><td>${fmt(c.missing)} (${percent(c.percentage)})</td><td>${after?`${fmt(after.columns[i].missing)} (${percent(after.columns[i].percentage)})`:'—'}</td></tr>`).join('');$('nullAnalysisNote').textContent='Missing includes blanks, whitespace and N/A, NA, null, none, nil, undefined or dashes. Zero and false are values. Before uses imported rows; after uses retained rows. Filling or removing missing values requires your selected column policy.';}
+  function renderMetrics(){$('performanceSummary').textContent=`Import ${(importMs/1000).toFixed(2)}s · Cleaning ${cleanMs?(cleanMs/1000).toFixed(2)+'s ('+fmt(Math.round(loaded.rowCount/(cleanMs/1000)))+' rows/s)':'not run'} · ${exports} exports prepared · First export ${firstExport===null?'not prepared':(firstExport/1000).toFixed(1)+'s after import started'}`;}
+  async function renderTable(){if(!loaded)return;const generation=++pageGeneration;try{await ensureData();const data=await request('page',{view,page,query:$('search').value,filter:$('rowFilter').value});if(generation!==pageGeneration)return;page=data.page;['Original','Cleaned','Issues'].forEach(name=>$('tab'+name).setAttribute('aria-pressed',String(view===name.toLowerCase())));$('previewTitle').textContent=view==='issues'?'Issues to review':view==='cleaned'?'Cleaned data':'Original data';$('legend').hidden=view!=='cleaned';const headers=view==='issues'?['Source row','Column','Original value','Detail','Severity','Action']:['Source row',...loaded.headers];$('table').innerHTML='<thead><tr>'+headers.map(h=>'<th scope="col">'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+data.items.map(item=>view==='issues'?`<tr><td>${item.row}</td><td>${esc(item.column)}</td><td>${esc(item.original)}</td><td class="issue-detail">${esc(item.issue)}</td><td>${esc(item.severity||(/Removed|Dropped/.test(item.action)?'info':'error'))}</td><td>${!/Removed|Dropped/.test(item.action)&&loaded.headers.includes(item.column)?`<button type="button" class="edit-btn" data-issue="${item.index}">Review ↗</button>`:esc(item.action)}</td></tr>`:'<tr><td class="row-number">'+item.source+'</td>'+item.values.map((v,i)=>`<td class="${item.flags[i]?'invalid':item.changed[i]?'changed':''}" title="${esc(v)}">${esc(v)}</td>`).join('')+'</tr>').join('')+'</tbody>';$('tableEmpty').hidden=data.count!==0;$('tableCount').textContent=fmt(data.count)+(view==='issues'?' events':' rows');$('pageInfo').textContent=data.count?`${fmt(page*50+1)}–${fmt(Math.min((page+1)*50,data.count))} of ${fmt(data.count)} · source row numbers shown`:'No matching rows.';$('pageNumber').textContent=(page+1)+' / '+data.pages;$('prev').disabled=page===0;$('next').disabled=page>=data.pages-1;}catch(error){if(error.message!=='Cancelled')message(error.message);}}
+  function renderResults(){const q=result.quality;$('businessResults').hidden=false;$('qualitySummary').innerHTML=[['Completeness',q.requiredCells?`${fmt(q.requiredCells-q.requiredMissing)} / ${fmt(q.requiredCells)} required cells present`:`${fmt(q.cells-q.missing)} / ${fmt(q.cells)} cells present`],['Validity',`${fmt(q.flaggedCells)} cells need format or business review`],['Consistency',`${q.consistencyFailed} failed / ${q.consistencyChecked} usable business checks`],['Uniqueness',`${result.stats.duplicates} exact duplicates removed; ${result.stats.merged||0} approved merges; ${result.duplicates.pairs.length} possible matches suggested`],['Accuracy',q.accuracy],['Timeliness',q.timeliness]].map(([label,text])=>`<div class="quality-item"><strong>${label}</strong><span>${esc(text)}</span></div>`).join('');$('severitySummary').textContent=`${fmt(q.errors)} errors · ${fmt(q.warnings)} warnings. Review decisions and exclusions before using these results.`;renderDuplicates();const n=result.insights;$('insightsSummary').textContent=n.enabled?`${n.unit}: ${n.totals.map(t=>t.currency+' '+t.total).join(' · ')||'No usable amounts'}. ${n.included} rows included, ${n.excluded} excluded; ${n.undated} included amounts have no usable date. Date range ${n.earliest||'—'} to ${n.latest||'—'}. ${n.contactRows} rows have a formatted email or Kenyan mobile; ${n.missingIds} missing mapped IDs.`:n.note;$('insightsTable').innerHTML=n.enabled?'<thead><tr><th>Currency</th><th>Month</th><th>'+esc(n.unit)+'</th><th>Rows</th></tr></thead><tbody>'+n.monthly.map(g=>`<tr><td>${esc(g.currency)}</td><td>${g.month}</td><td>${g.total}</td><td>${g.rows}</td></tr>`).join('')+'</tbody>':'';$('categorySummary').textContent=n.enabled?n.categories.map(([label,count])=>label+': '+count+' rows').join(' · '):'';$('insightsNote').textContent=n.enabled?n.note:'';}
+  function renderDuplicates(){const d=result.duplicates,pairs=d.pairs.filter(p=>!ignored.has(p.keep+':'+p.drop));$('duplicateNote').textContent=d.note+(d.truncated?' Search reached a limit; review coverage is partial.':'');$('duplicatePairs').innerHTML=pairs.slice(0,(suggestionPage+1)*20).map(p=>`<article class="duplicate-pair"><div><strong>Source rows ${p.keep} & ${p.drop}</strong><span class="badge">${p.score}% name similarity</span><p>${esc(p.left[business.fuzzy.column])} ↔ ${esc(p.right[business.fuzzy.column])}</p></div><div class="actions"><button class="btn secondary small-btn" data-review-pair="${p.keep}:${p.drop}" type="button">Review merge</button><button class="text-button" data-ignore-pair="${p.keep}:${p.drop}" type="button">Keep both</button></div></article>`).join('')||'<p class="help">No pending duplicate suggestions.</p>';$('morePairs').hidden=pairs.length<=(suggestionPage+1)*20;$('undoMerge').disabled=!merges.length;}
+  async function runClean(){await work('Applying business rules…',async()=>{const epoch=operationEpoch,c=config();B.validateConfig(loaded.headers,c.business);await ensureData();await authorize();const start=performance.now();result=await request('cleanSession',{config:c});cleanMs=performance.now()-start;record('clean','success',cleanMs);ignored.clear();suggestionPage=0;view='cleaned';page=0;$('search').value='';$('rowFilter').value='all';$('issueCount').textContent=result.issueCount?'('+fmt(result.issueCount)+')':'';$('exportPanel').hidden=false;$('exportNote').hidden=false;$('reviewNotice').hidden=!result.stats.review;$('reviewNotice').textContent=fmt(result.stats.review)+' retained rows need review. Open Issues to inspect the format and business checks.';$('settingsHint').textContent='Results are current. Adjust your rules to clean again.';renderStats();renderResults();await renderTable();if(epoch!==operationEpoch)throw Error('Cancelled');$('cleanSuccessSummary').textContent=`${fmt(result.stats.output)} rows ready. ${fmt(result.stats.review)} rows need review. Business checks and summaries are below.`;$('cleanSuccessDialog').showModal();},'clean');}
+  function saveBlob(blob,name){const url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),30000);}
+  function baseName(){return currentFile.name.replace(/\.[^.]+$/,'');}
+  async function exportData(kind){await work('Preparing your export…',async()=>{await downloadAccess();await ensureData();const start=performance.now(),buffer=await request(kind==='xlsx'?'xlsx':'sessionCSV',kind==='xlsx'?{session:true}:{kind});saveBlob(new Blob(buffer.buffers||[buffer],{type:kind==='xlsx'?'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':'text/csv;charset=utf-8'}),baseName()+({xlsx:'_cleaned.xlsx',cleaned:'_cleaned.csv',log:'_change_log.csv',null:'_null_analysis.csv',quality:'_quality_report.csv',insights:'_business_summary.csv'}[kind]));exports++;if(firstExport===null)firstExport=performance.now()-importStarted;record('export','success',performance.now()-start);renderMetrics();message('Export prepared on your device. Your browser controls where the file is saved.','success');},'export');}
+  $('browse').onclick=()=>$('file').click();$('file').onchange=()=>{if($('file').files[0])importFile($('file').files[0]);};$('sample').onclick=()=>importFile(new File([SAMPLE],'sample_customers.csv',{type:'text/csv'}),true);
+  $('drop').ondragover=e=>{e.preventDefault();if(!busy)$('drop').classList.add('dragging');};$('drop').ondragleave=()=>$('drop').classList.remove('dragging');$('drop').ondrop=e=>{e.preventDefault();$('drop').classList.remove('dragging');if(e.dataTransfer.files.length===1)importFile(e.dataTransfer.files[0]);else message('Choose one file at a time.');};window.addEventListener('dragover',e=>e.preventDefault());window.addEventListener('drop',e=>e.preventDefault());
+  $('workspace').addEventListener('change',e=>{if(busy||e.target.id==='hasHeader'||e.target.id==='sheetSelect'||e.target.id==='savedTemplate'||e.target.id==='businessTemplate'||e.target.id==='rowFilter'||e.target.id==='templateImport')return;if(e.target.closest('#businessSetup,#columns,.settings-group'))invalidate();});
+  $('hasHeader').onchange=()=>work('Profiling the worksheet…',async()=>{try{await ensureData();loaded={...loaded,...await request('reconfigure',{hasHeader:$('hasHeader').checked})};edits=[];merges=[];setup();}catch(error){$('hasHeader').checked=loaded.hasHeader;throw error;}});
+  $('sheetSelect').onchange=()=>work('Opening worksheet…',async()=>{try{await ensureData();loaded={...loaded,...await request('sheet',{name:$('sheetSelect').value,session:true,hasHeader:$('hasHeader').checked})};edits=[];merges=[];setup();}catch(error){$('sheetSelect').value=loaded.sheet;throw error;}});
+  $('businessTemplate').onchange=()=>{business=B.defaults(loaded.headers,$('businessTemplate').value);renderBusiness();invalidate();message('Template applied. Confirm the column rules and summary mappings.','success');};
+  $('saveTemplate').onclick=()=>{try{const c=config();B.validateConfig(loaded.headers,c.business);const name=$('templateName').value.trim();if(!name)throw Error('Give the template a name.');const list=refreshSaved().filter(r=>r.name!==name);list.push(B.recipeFor(loaded.headers,c,name));if(list.length>30)throw Error('Keep up to 30 templates on this device. Export a template before replacing it.');localStorage.setItem(storageKey,JSON.stringify(list));refreshSaved();message('Template saved on this device. It contains rules and mappings, not spreadsheet rows.','success');}catch(error){message(error.message);}};
+  $('savedTemplate').onchange=()=>{try{const index=$('savedTemplate').value,recipe=refreshSaved()[index];if(recipe){applyConfig(B.applyRecipe(recipe,loaded.headers));$('savedTemplate').value=index;}}catch(error){message(error.message);}};
+  $('exportTemplate').onclick=()=>{try{const c=config();B.validateConfig(loaded.headers,c.business);saveBlob(new Blob([JSON.stringify(B.recipeFor(loaded.headers,c,$('templateName').value||'Business template'),null,2)],{type:'application/json'}),'tidysheet-template.json');}catch(error){message(error.message);}};
+  $('importTemplate').onclick=()=>$('templateImport').click();$('templateImport').onchange=async()=>{try{const file=$('templateImport').files[0];if(!file)return;if(file.size>200000)throw Error('Use a template under 200 KB.');applyConfig(B.applyRecipe(JSON.parse(await file.text()),loaded.headers));message('Template imported. Review its fill, removal, mapping and merge rules before cleaning.','success');}catch(error){message(error.message);}finally{$('templateImport').value='';}};
+  for(const [id,kind] of [['addDateRule','dateOrder'],['addTotalRule','total']])$(id).onclick=()=>{try{readBusiness();business.crossRules.push(kind==='dateOrder'?{kind,start:0,end:Math.min(1,loaded.headers.length-1),severity:'error'}:{kind,qty:0,price:Math.min(1,loaded.headers.length-1),total:Math.min(2,loaded.headers.length-1),tolerance:.01,severity:'error'});renderRules();invalidate();}catch(error){message(error.message);}};
+  $('crossRules').onclick=e=>{if(e.target.dataset.removeRule!==undefined){readBusiness();business.crossRules.splice(Number(e.target.dataset.removeRule),1);renderRules();invalidate();}};
+  $('run').onclick=runClean;['original','cleaned','issues'].forEach(v=>$('tab'+v[0].toUpperCase()+v.slice(1)).onclick=()=>{view=v;page=0;$('rowFilter').value='all';renderTable();});$('search').oninput=()=>{clearTimeout(searchTimer);searchTimer=setTimeout(()=>{page=0;renderTable();},180);};$('rowFilter').onchange=()=>{page=0;renderTable();};$('prev').onclick=()=>{page--;renderTable();};$('next').onclick=()=>{page++;renderTable();};
+  for(const [id,kind] of [['downloadXlsx','xlsx'],['downloadCsv','cleaned'],['downloadLog','log'],['downloadNullReport','null'],['downloadQuality','quality'],['downloadInsights','insights']])$(id).onclick=()=>exportData(kind);
+  $('table').onclick=async e=>{const button=e.target.closest('[data-issue]');if(!button||busy)return;try{activeIssue=await request('getIssue',{index:Number(button.dataset.issue)});$('editContext').textContent='Source row '+activeIssue.row+' · '+activeIssue.column;$('editReason').textContent=activeIssue.issue;$('editValue').value=activeIssue.original;$('editDialog').showModal();}catch(error){message(error.message);}};
+  $('closeDialog').onclick=()=>$('editDialog').close();$('editForm').onsubmit=async e=>{e.preventDefault();if(!activeIssue)return;try{const edit={row:activeIssue.row,column:loaded.headers.indexOf(activeIssue.column),value:$('editValue').value};await request('editSession',edit);edits.push(edit);$('editDialog').close();activeIssue=null;await runClean();}catch(error){$('editReason').textContent=error.message;}};
+  $('duplicatePairs').onclick=async e=>{const key=e.target.dataset.ignorePair||e.target.dataset.reviewPair;if(!key)return;if(e.target.dataset.ignorePair){try{const [keep,drop]=key.split(':').map(Number);await request('keepBoth',{keep,drop});ignored.add(key);renderDuplicates();}catch(error){message(error.message);}return;}activePair=result.duplicates.pairs.find(p=>p.keep+':'+p.drop===key);$('mergeContext').textContent=`Keep source row ${activePair.keep}, remove source row ${activePair.drop}, and choose each retained value. Long display values are shortened; the full selected values will be kept.`;$('mergeFields').innerHTML=loaded.headers.map((h,i)=>`<label class="field">${esc(h)}<select data-merge-column="${i}"><option value="left">Row ${activePair.keep}: ${esc(activePair.left[i]||'(blank)')}</option><option value="right">Row ${activePair.drop}: ${esc(activePair.right[i]||'(blank)')}</option></select></label>`).join('');$('mergeDialog').showModal();};$('closeMerge').onclick=()=>$('mergeDialog').close();$('mergeForm').onsubmit=async e=>{e.preventDefault();if(!activePair)return;try{const out=await request('mergeSession',{keep:activePair.keep,drop:activePair.drop,choices:Array.from(document.querySelectorAll('[data-merge-column]')).map(el=>el.value)});merges.push(out.decision);$('mergeDialog').close();activePair=null;await runClean();}catch(error){message(error.message);}};$('undoMerge').onclick=async()=>{await request('undoMerge');merges.pop();await runClean();};$('morePairs').onclick=()=>{suggestionPage++;renderDuplicates();};
+  $('cancel').onclick=()=>{operationEpoch++;if(worker)worker.terminate();worker=null;ready=false;for(const p of pending.values())p.reject(Error('Cancelled'));pending.clear();if(loaded){invalidate(false);$('table').replaceChildren();$('tableEmpty').hidden=false;$('tableEmpty').textContent='Processing cancelled. Open Original or clean again to restore the preview.';}message('Operation cancelled. Your source file and reviewed corrections remain available. Clean again to restore the worker.','success');};
+  $('newFile').onclick=()=>$('resetDialog').showModal();$('keepWorkspace').onclick=()=>$('resetDialog').close();$('clearWorkspace').onclick=()=>{if(worker)worker.terminate();worker=null;ready=false;loaded=null;currentFile=null;result=null;edits=[];merges=[];pageGeneration++;$('workspace').hidden=true;$('uploadView').hidden=false;$('resetDialog').close();message('');};
+  window.addEventListener('beforeunload',e=>{if(edits.length||merges.length){e.preventDefault();e.returnValue='';}});
+  if(sampleOnly||new URLSearchParams(location.search).has('sample'))$('sample').click();if(sampleOnly){$('browse').hidden=true;$('newFile').textContent='Use my own file ↗';$('newFile').onclick=()=>location.assign('/account');}
 })();

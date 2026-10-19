@@ -1,16 +1,18 @@
 'use strict';
 (()=>{
   const $=id=>document.getElementById(id),message=$('mlMessage');if(!message)return;
-  let worker,sequence=0,pending=new Map(),loaded=null,busy=false,hasResult=false;
+  let cancelGeneration=0;
+  let worker,sequence=0,pending=new Map(),loaded=null,busy=false,hasResult=false,importStarted=0,firstExport=null,trainingSample=false,activeOperation='import',operationStarted=0;
   const escape=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function record(operation,outcome,durationMs,timeToExportMs=null){if(!loaded||trainingSample)return;fetch('/api/activity',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),mode:'training',operation,outcome,durationMs:Math.max(0,Math.round(durationMs)),rows:loaded.rows,columns:loaded.headers.length,timeToExportMs:timeToExportMs===null?null:Math.round(timeToExportMs)})}).catch(()=>{});}
   function notify(text,error=false){message.textContent=text;message.className='notice '+(error?'error':'success');message.hidden=false;}
   function init(){worker=new Worker('/assets/ml-worker.js?v=2.1.0');worker.onmessage=({data})=>{const p=pending.get(data.id);if(!p)return;pending.delete(data.id);data.error?p.reject(Error(data.error)):p.resolve(data.result);};worker.onerror=()=>{for(const p of pending.values())p.reject(Error('The processing worker stopped. Try a smaller dataset.'));pending.clear();};}init();
   function call(action,args={}){return new Promise((resolve,reject)=>{const id=++sequence;pending.set(id,{resolve,reject});worker.postMessage({id,action,...args});});}
-  function lock(value){busy=value;document.querySelectorAll('#mlUpload button,#mlUpload select,#mlUpload input,#mlWorkspace button,#mlWorkspace select,#mlWorkspace input').forEach(el=>el.disabled=value);}
-  async function work(fn){if(busy)return;lock(true);try{await fn();}catch(e){notify(e.message,true);}finally{lock(false);}}
-  async function authorize(record=false){
+  function lock(value){busy=value;$('mlCancel').hidden=!value;document.querySelectorAll('#mlUpload button,#mlUpload select,#mlUpload input,#mlWorkspace button,#mlWorkspace select,#mlWorkspace input').forEach(el=>el.disabled=value);}
+  async function work(fn,operation='import'){if(busy)return;activeOperation=operation;operationStarted=performance.now();lock(true);try{await fn();}catch(e){if(e.message!=='Cancelled'){notify(e.message,true);record(operation,'failure',performance.now()-operationStarted);}}finally{lock(false);}}
+  async function authorize(record=false){const generation=cancelGeneration;
     const response=await fetch(record?'/api/usage/clean':'/api/session',record?{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),mode:'training',rows:loaded.rows,columns:loaded.headers.length})}:{credentials:'same-origin',cache:'no-store'});
-    const value=await response.json();if(!response.ok||(!record&&!value.access?.training))throw Error(value.message||'Premium or an active trial is required. Open your account to continue.');
+    const value=await response.json();if(generation!==cancelGeneration)throw Error('Cancelled');if(!response.ok||(!record&&!value.access?.training))throw Error(value.message||'Premium or an active trial is required. Open your account to continue.');
   }
   function table(headers,rows){$('mlPreview').innerHTML='<thead><tr>'+headers.map(h=>'<th>'+escape(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(v=>'<td title="'+escape(v)+'">'+escape(String(v).slice(0,160))+'</td>').join('')+'</tr>').join('')+'</tbody>';}
   function invalidate(){hasResult=false;$('mlResult').hidden=true;}
@@ -26,10 +28,10 @@
     $('mlSheets').innerHTML=data.files.map((f,i)=>f.sheets.length?'<label class="field">'+escape(f.name)+' worksheet<select data-sheet="'+i+'">'+f.sheets.map(s=>'<option '+(s===f.sheet?'selected':'')+'>'+escape(s)+'</option>').join('')+'</select></label>':'').join('');
     $('mlPreviewTitle').textContent='Source preview';table(data.headers,data.preview);notify('Datasets loaded locally. Confirm the target and feature roles.'+(data.warnings.length?' '+data.warnings.join(' '):''));
   }
-  async function load(files){await authorize();notify('Reading datasets on your device…');render(await call('load',{files,union:$('mlUnion').checked}));}
+  async function load(files,sample=false){trainingSample=sample;const start=performance.now();await authorize();notify('Reading datasets on your device…');render(await call('load',{files,union:$('mlUnion').checked}));importStarted=start;firstExport=null;record('import','success',performance.now()-start);}
   $('mlBrowse').onclick=()=>$('mlFiles').click();$('mlFiles').onchange=()=>{const files=Array.from($('mlFiles').files);if(files.length)work(()=>load(files));};
   $('mlDrop').ondragover=e=>{e.preventDefault();$('mlDrop').classList.add('dragging');};$('mlDrop').ondragleave=()=>$('mlDrop').classList.remove('dragging');$('mlDrop').ondrop=e=>{e.preventDefault();$('mlDrop').classList.remove('dragging');if(e.dataTransfer.files.length)work(()=>load(Array.from(e.dataTransfer.files)));};
-  $('mlSample').onclick=()=>work(async()=>{const rows=['record_id,age,income,segment,label'];for(let i=0;i<80;i++)rows.push([i+1,i%11===0?'':20+i%45,15000+i*420,i%3===0?'retail':'business',i%2?'retained':'churned'].join(','));await load([new File([rows.join('\n')],'training_sample.csv',{type:'text/csv'})]);});
+  $('mlSample').onclick=()=>work(async()=>{const rows=['record_id,age,income,segment,label'];for(let i=0;i<80;i++)rows.push([i+1,i%11===0?'':20+i%45,15000+i*420,i%3===0?'retail':'business',i%2?'retained':'churned'].join(','));await load([new File([rows.join('\n')],'training_sample.csv',{type:'text/csv'})],true);});
   $('mlTask').onchange=taskChanged;$('mlSplit').onchange=()=>{splitChanged();invalidate();};
   $('mlUnion').onchange=()=>{if(loaded)work(async()=>render(await call('load',{union:$('mlUnion').checked,sheets:loaded.files.map(f=>f.sheet)})));};
   $('mlSheets').onchange=e=>{if(e.target.matches('[data-sheet]'))work(async()=>{const sheets=loaded.files.map(f=>f.sheet);sheets[Number(e.target.dataset.sheet)]=e.target.value;render(await call('load',{union:$('mlUnion').checked,sheets}));});};
@@ -40,8 +42,8 @@
     const result=await call('prepare',{config});await authorize(true);hasResult=true;$('mlResult').hidden=false;$('mlPreviewTitle').textContent='Prepared training preview';table(result.headers,result.preview);
     $('mlStats').innerHTML=Object.entries(result.counts).map(([key,n])=>'<div class="stat"><span class="stat-label">'+escape(key)+'</span><strong>'+n.toLocaleString()+'</strong><span class="stat-detail">rows</span></div>').join('')+'<div class="stat green"><span class="stat-label">Output columns</span><strong>'+result.headers.length+'</strong></div>';
     const r=result.report;$('mlSummary').textContent=r.outputRows.toLocaleString()+' of '+r.inputRows.toLocaleString()+' rows retained · '+r.duplicatesRemoved+' duplicates removed · '+r.missingTargetsRemoved+' missing targets · '+r.invalidTargetsRemoved+' invalid targets · '+r.invalidNumericCells+' invalid numeric cells treated as missing · '+r.imputedCells+' values imputed · '+r.droppedFeatures.length+' constant features dropped.';
-    $('mlWarnings').innerHTML=r.warnings.map(w=>'<li>'+escape(w)+'</li>').join('');notify('Your datasets are ready. Review the preview and report before exporting.');$('mlResult').scrollIntoView({behavior:'smooth',block:'center'});$('mlSuccessDialog').showModal();
-  });
-  async function download(format){if(!hasResult)throw Error('Prepare the dataset with your current settings first.');await authorize();const out=await call('export',{format,safeCSV:$('mlSafeCSV').checked}),url=URL.createObjectURL(new Blob([out.content],{type:out.mime})),link=document.createElement('a');link.href=url;link.download=out.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),10000);notify('Export created on your device.');}
-  $('mlZip').onclick=()=>work(()=>download('zip'));$('mlJSONL').onclick=()=>work(()=>download('jsonl'));taskChanged();
+    $('mlWarnings').innerHTML=r.warnings.map(w=>'<li>'+escape(w)+'</li>').join('');notify('Your datasets are ready. Review the preview and report before exporting.');$('mlResult').scrollIntoView({behavior:'smooth',block:'center'});$('mlSuccessDialog').showModal();record('clean','success',performance.now()-operationStarted);
+  },'clean');
+  async function download(format){if(!hasResult)throw Error('Prepare the dataset with your current settings first.');await authorize();const out=await call('export',{format,safeCSV:$('mlSafeCSV').checked}),url=URL.createObjectURL(new Blob([out.content],{type:out.mime})),link=document.createElement('a');link.href=url;link.download=out.name;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),10000);notify('Export created on your device.');const isFirst=firstExport===null;if(isFirst)firstExport=performance.now()-importStarted;record('export','success',performance.now()-operationStarted,isFirst?firstExport:null);}
+  $('mlZip').onclick=()=>work(()=>download('zip'),'export');$('mlJSONL').onclick=()=>work(()=>download('jsonl'),'export');$('mlCancel').onclick=()=>{cancelGeneration++;record(activeOperation,'cancelled',performance.now()-operationStarted);worker.terminate();for(const p of pending.values())p.reject(Error('Cancelled'));pending.clear();init();loaded=null;hasResult=false;$('mlWorkspace').hidden=true;$('mlDrop').hidden=false;$('mlSample').hidden=false;$('mlFiles').value='';notify('Operation cancelled. Choose your source files again to continue.');};taskChanged();
 })();

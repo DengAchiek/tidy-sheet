@@ -27,3 +27,9 @@ export const usageEvents=sqliteTable('usage_events',{
   id:text('id').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),
   mode:text('mode').notNull().default('business'),rowCount:integer('row_count').notNull(),columnCount:integer('column_count').notNull(),createdAt:integer('created_at').notNull(),
 },t=>[index('usage_user_created').on(t.userId,t.createdAt)]);
+export const processingEvents=sqliteTable('processing_events',{
+  id:text('id').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),
+  mode:text('mode').notNull().default('business'),operation:text('operation').notNull(),outcome:text('outcome').notNull(),
+  durationMs:integer('duration_ms').notNull(),rowCount:integer('row_count').notNull(),columnCount:integer('column_count').notNull(),
+  timeToExportMs:integer('time_to_export_ms'),createdAt:integer('created_at').notNull(),
+},t=>[index('processing_user_created').on(t.userId,t.createdAt)]);

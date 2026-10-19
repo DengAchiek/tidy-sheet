@@ -40,7 +40,8 @@ export async function handleRequest(request:Request):Promise<Response>{
       const access=subscriptionAccess(account,subscription,Date.now(),billingMode()),now=new Date(),start=Date.UTC(now.getUTCFullYear(),now.getUTCMonth(),1);
       const usage=await first('SELECT count(*) AS runs,coalesce(sum(row_count),0) AS rows FROM usage_events WHERE user_id=? AND created_at>=?',user.userId,start);
       const recent=await all('SELECT row_count,column_count,created_at,mode FROM usage_events WHERE user_id=? ORDER BY created_at DESC LIMIT 8',user.userId);
-      return html(accountPage(user,account,subscription,access,usage,plans,recent,notice));
+      const processing=await first("SELECT count(*) AS attempts,sum(CASE WHEN operation='export' AND outcome='success' THEN 1 ELSE 0 END) AS exports,sum(CASE WHEN outcome='failure' THEN 1 ELSE 0 END) AS failures,avg(CASE WHEN operation='clean' AND outcome='success' THEN duration_ms END) AS clean_ms,avg(time_to_export_ms) AS first_export_ms,count(DISTINCT CASE WHEN outcome='success' AND operation IN ('clean','export') THEN strftime('%Y-%W',created_at/1000,'unixepoch') END) AS active_weeks FROM processing_events WHERE user_id=? AND created_at>=?",user.userId,Date.now()-56*86400000);
+      return html(accountPage(user,account,subscription,access,usage,plans,recent,notice,processing));
     }
     if(request.method==='GET'&&path==='/api/session'){
       const user=await getChatGPTUser();if(!user)return json({user:null,access:{allowed:false,source:'none'}});
@@ -53,6 +54,14 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='POST'&&path==='/api/billing/portal'){const {user}=await userAccount();return json(await portal(user.userId));}
     if(request.method==='POST'&&path==='/api/billing/verify'){const {user}=await userAccount(),body=await readJSON(request);return json(await verifyCheckout(body.reference,user.userId));}
     if(request.method==='POST'&&path==='/api/billing/refresh'){const {user}=await userAccount();await refreshSubscription(user.userId);return json({refreshed:true});}
+    if(request.method==='POST'&&path==='/api/activity'){
+      const {user,account}=await userAccount(),body=await readJSON(request),access=subscriptionAccess(account,await subscriptionFor(user.userId),Date.now(),billingMode()),mode=body.mode||'business';
+      if(!(mode==='training'?access.training:mode==='business'&&access.business))throw new AppError(402,'subscription_required','An active workspace is required.');
+      const permitted=['id','mode','operation','outcome','durationMs','rows','columns','timeToExportMs'];
+      if(Object.keys(body).some(key=>!permitted.includes(key))||typeof body.id!=='string'||!/^[a-f\d-]{36}$/i.test(body.id)||!['import','clean','export'].includes(body.operation)||!['success','failure','cancelled'].includes(body.outcome)||!Number.isInteger(body.durationMs)||body.durationMs<0||body.durationMs>86400000||!Number.isInteger(body.rows)||body.rows<0||body.rows>100000||!Number.isInteger(body.columns)||body.columns<1||body.columns>100||body.rows*body.columns>1000000||!(body.timeToExportMs==null||(body.operation==='export'&&body.outcome==='success'&&Number.isInteger(body.timeToExportMs)&&body.timeToExportMs>=0&&body.timeToExportMs<=86400000)))throw new AppError(400,'invalid_metrics','Only bounded processing counts and timings are accepted.');
+      const existing=await first('SELECT user_id FROM processing_events WHERE id=?',body.id);if(existing&&existing.user_id!==user.userId)throw new AppError(409,'request_conflict','Please retry.');
+      await run('INSERT INTO processing_events (id,user_id,mode,operation,outcome,duration_ms,row_count,column_count,time_to_export_ms,created_at) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING',body.id,user.userId,mode,body.operation,body.outcome,body.durationMs,body.rows,body.columns,body.timeToExportMs??null,Date.now());return json({recorded:true});
+    }
     if(request.method==='POST'&&path==='/api/usage/clean'){
       const {user,account}=await userAccount(),sub=await subscriptionFor(user.userId),body=await readJSON(request),mode=body.mode||'business';
       if(!['business','training'].includes(mode))throw new AppError(400,'invalid_mode','Choose a valid workspace.');

@@ -135,6 +135,7 @@
     const output=[],flags=[],changed=[],origins=[],issues=[],audit=[],seen=new Map();
     const stats={input:rows.length,output:0,changed:0,duplicates:0,empty:0,invalid:0,dropped:0,review:0};
     for(let ri=0;ri<rows.length;ri++){
+      if(onProgress&&ri%1024===0)onProgress(Math.round(ri/Math.max(1,rows.length)*100));
       const row=rows[ri],source=sourceRows[ri],values=[],rowFlags=[],rowChanged=[],rowIssues=[],rowAudit=[];
       for(let ci=0;ci<headers.length;ci++){
         const raw=row[ci];let s=config.trim===false?raw:raw.replace(/\s+/gu,' ').trim();

@@ -143,3 +143,17 @@ test('Native identity trial grants training once and recorded usage is scoped to
 });
 
 test('Reusing a configured provider code cannot bypass the selected tier price check through cache',async()=>{const h=harness();h.env.PAYSTACK_REGULAR_PLAN_CODE=h.env.PAYSTACK_MONTHLY_PLAN_CODE;await h.billing.getPlan('monthly');await assert.rejects(h.billing.getPlan('regular_monthly'),e=>e.code==='plan_unavailable');});
+
+test('Processing events accept only counts/timings and are authenticated, tenant scoped and idempotent',async()=>{
+  const h=harness();h.env.TRIAL_DAYS='7';const route=routes(h,{userId:'metrics-user',email:'metrics@example.com',displayName:'Metrics'}),id=webcrypto.randomUUID();
+  const payload={id,operation:'export',outcome:'success',durationMs:100,rows:20,columns:3,timeToExportMs:1000};
+  const request=(body=payload,origin='https://example.com')=>new Request('https://example.com/api/activity',{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await route(request())).status,200);assert.equal((await route(request())).status,200);
+  const rows=await h.store.all('SELECT * FROM processing_events');assert.equal(rows.length,1);assert.equal(rows[0].user_id,'metrics-user');assert.equal(rows[0].time_to_export_ms,1000);
+  assert.equal((await route(request({...payload,id:webcrypto.randomUUID(),filename:'private.csv'}))).status,400);
+  assert.equal((await route(request({...payload,id:webcrypto.randomUUID(),durationMs:-1}))).status,400);
+  assert.equal((await route(request(payload,'https://evil.test'))).status,403);
+  assert.equal((await routes(h,null)(request())).status,401);
+  const other=routes(h,{userId:'other-metrics',email:'other@example.com',displayName:'Other'});assert.equal((await other(request())).status,409);
+  assert.equal((await route(new Request('https://example.com/account'))).status,200);
+});

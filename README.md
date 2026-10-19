@@ -94,3 +94,30 @@ Excel exports retain text phone numbers and IDs and export safe amounts with up 
 ## Third-party software
 
 SheetJS Community Edition 0.20.3 is bundled from its [official distribution](https://docs.sheetjs.com/docs/getting-started/installation/standalone/). Its Apache 2.0 license is in `public/assets/vendor/SHEETJS-LICENSE.txt`. The supplied Sites/Vinext build integration and its license are preserved under `build/`.
+
+
+## Business workflows
+
+The business workspace now provides Customer, Sales/invoice, Inventory and Supplier templates. General cleaning retains the existing exact-row deduplication default; business templates default to keeping transaction rows. Inventory presets flag negative stock, and a Sales template adds date-order and quantity × price checks when matching columns exist. Review the inferred fields before cleaning.
+
+Each column supports optional/required, explicit missing-row removal, or a chosen fill value; numeric bounds; approved categories; and exact, case-insensitive alias-to-category mappings. Missing policies recognize the markers documented above. Required fields flag retained rows. Format-based removal and missing-policy removal are separate, explicit settings. Category mappings must point directly to a final label, avoiding cascading changes on repeat runs.
+
+Cross-field checks flag a delivery date before an order date or a total outside a selected quantity × price tolerance. Totals use exact decimal arithmetic through six places; invalid or excessive-precision inputs are marked as uncheckable. Numeric bounds also preserve decimal precision. Business validation flags issues without silently removing those rows. Quality output distinguishes required completeness, flagged cells, configured consistency checks, duplicate decisions, and descriptive date coverage. Accuracy against authoritative records is **not verified**.
+
+Possible entity duplicates are optional and bounded: normalized company/name comparisons within the same first two normalized characters and optional exact group, up to 64 candidates per group, 200,000 comparisons and 200 suggestions. Values longer than 120 characters are skipped. Similarity is a string heuristic, not proof of identity. Review each value before approving a merge; keep-both and merge decisions enter the change log. Undo last merge restores the two records. Original imported rows remain available separately. Repeated purchases by a customer can be valid.
+
+Business summaries require confirmation of the amount meaning, date, units and currency mappings. They include monthly totals by currency, category counts, missing IDs, and format-valid contact coverage. Decimal sums preserve up to six places; amounts with invalid formats, currency conflicts or extra precision are excluded and counted. Invalid dates enter an Undated bucket, and currencies are never converted or added together. Excel exports include Null analysis, Quality report, and configured Business summary sheets. CSV reports are available separately.
+
+Saved templates are device-local settings scoped to the signed-in site identity (the free sample has its own namespace). They include column names and user-entered mappings, **not spreadsheet rows**. Explicit JSON export/import enables reuse on another device. Applying a template requires the same named columns; column order may differ. Browser storage clearing removes the saved settings. This does not create cloud spreadsheet history.
+
+## Processing performance and measurement
+
+Business CSV imports decode UTF-8 incrementally, including quoted newlines and split multibyte characters. Import preparation and missing-value profiling, complete datasets, corrections, search/filtering, processing and exports stay in the worker. The UI receives metadata and 50-row pages; it does not clone complete datasets into the main thread for every cleaning run. CSV exports use transferable chunks and Excel generation uses dense worksheets and compression. XLS/XLSX parsing and workbook generation still require in-memory workbook representations; large Excel exports use substantially more memory than CSV.
+
+Cancelling business processing terminates the worker. The source File, manual corrections and reviewed merges remain in the current tab and are reapplied on retry; fresh results require cleaning again. Cancelling training processing resets that workspace and asks the user to choose the source files again. Closing or refreshing the tab clears source data and review decisions.
+
+Signed-in processing emits best-effort, tenant-scoped counts and timings: import/clean/export, success/failure/cancelled, dimensions, duration, and time to first prepared export. Free business and training samples are excluded from these performance events. No filenames, column names, errors containing data, or spreadsheet values are accepted by the endpoint. Events are client-reported operational metrics, not billing authority. The account page shows prepared exports, failures, average cleaning time, first-export time and active weeks over eight weeks. A prepared export does not prove that the browser saved the file.
+
+Run `npm run benchmark` to reproduce `docs/performance-latest.json`. It processes synthetic 10k, 50k and 100k-row normal, malformed-value, long-text and 10-column files in isolated Node worker-source harnesses. Every case verifies row retention, CSV, quality-report and XLSX generation, and records timings and peak RSS. These are Node measurements on the recorded host, not browser guarantees or a universal speed claim. Browser QA separately checks templates, summary mappings, review/undo, and responsive controls. Existing limits remain 20 MB, 100,000 data rows, 100 columns and 1 million input cells.
+
+Local previews require the additive `drizzle/0002_military_adam_destine.sql` migration for the operational metrics table. Hosted deployment applies the generated schema migration through Sites before updating the Worker.
