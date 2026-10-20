@@ -45,6 +45,12 @@ export const sessions=sqliteTable('auth_sessions',{
 export const authLimits=sqliteTable('auth_rate_limits',{
   key:text('key').primaryKey(),attempts:integer('attempts').notNull(),expiresAt:integer('expires_at').notNull(),
 });
+export const passwordResets=sqliteTable('auth_password_resets',{
+  userId:text('user_id').primaryKey().references(()=>accounts.id),
+  tokenHash:text('token_hash').notNull(),credentialHash:text('credential_hash').notNull(),
+  expiresAt:integer('expires_at').notNull(),createdAt:integer('created_at').notNull(),
+  ready:integer('ready').notNull().default(0),
+},t=>[index('password_reset_expiry').on(t.expiresAt),uniqueIndex('password_reset_token').on(t.tokenHash)]);
 export const administrators=sqliteTable('administrators',{
   userId:text('user_id').primaryKey().references(()=>accounts.id),createdAt:integer('created_at').notNull(),
 });

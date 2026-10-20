@@ -26,82 +26,71 @@
   }
   const root=document.querySelector('[data-auth-root]');
   if(root){
-    const privateRegistration=root.hasAttribute('data-admin-registration');
-    let adminInvitation=null,submitting=false,invitationReady=Promise.resolve();
+    const privateRegistration=root.hasAttribute('data-admin-registration'),emailReady=root.dataset.emailReady==='true';
+    let adminInvitation=null,submitting=false,invitationValid=!privateRegistration,retryAt=0,invitationReady=Promise.resolve();
     const form=root.querySelector('[data-auth-form]'),title=root.querySelector('[data-auth-title]'),description=root.querySelector('[data-auth-description]');
-    const error=root.querySelector('[data-auth-error]'),submit=root.querySelector('[data-auth-submit]'),errorRecovery=root.querySelector('[data-auth-error-recover]');
-    const recoveryResult=root.querySelector('[data-recovery-result]'),codeView=root.querySelector('[data-recovery-code]');
+    const error=root.querySelector('[data-auth-error]'),submit=root.querySelector('[data-auth-submit]'),errorRecovery=root.querySelector('[data-auth-error-recover]'),emailStatus=root.querySelector('[data-email-status]');
+    function lock(value){
+      submitting=value;
+      root.querySelectorAll('input,button').forEach(el=>el.disabled=value||!invitationValid);
+      if(!value&&root.dataset.mode==='recover'&&(!emailReady||Date.now()<retryAt))submit.disabled=true;
+    }
     function mode(value){
       if(submitting)return;
-      const recovering=value==='recover',creating=value==='register';
-      root.dataset.mode=value;
+      const recovering=value==='recover',creating=value==='register';root.dataset.mode=value;
       root.querySelector('[data-name-field]').hidden=!creating;form.elements.name.required=creating;
-      root.querySelector('[data-recovery-field]').hidden=!recovering;form.elements.recoveryCode.required=recovering;
-      root.querySelector('[data-recovery-help]').hidden=!recovering;
-      root.querySelector('[data-confirm-field]').hidden=value==='login';form.elements.confirmPassword.required=value!=='login';
-      root.querySelector('[data-confirm-label]').textContent=recovering?'Confirm new password':'Confirm password';
-      form.elements.password.value='';form.elements.confirmPassword.value='';if(!recovering)form.elements.recoveryCode.value='';
-      form.elements.password.autocomplete=value==='login'?'current-password':'new-password';form.elements.password.minLength=value==='login'?1:15;
-      root.querySelector('[data-password-help]').hidden=value==='login';
-      root.querySelector('[data-password-label]').textContent=recovering?'New password':'Password';
+      root.querySelector('[data-password-field]').hidden=recovering;form.elements.password.required=!recovering;
+      root.querySelector('[data-confirm-field]').hidden=!creating;form.elements.confirmPassword.required=creating;
+      root.querySelector('[data-password-help]').hidden=!creating;
+      root.querySelector('[data-email-unavailable]').hidden=!recovering||emailReady;
+      form.elements.password.value='';form.elements.confirmPassword.value='';
+      form.elements.password.autocomplete=creating?'new-password':'current-password';form.elements.password.minLength=creating?15:1;
       title.textContent=recovering?'Forgot password?':creating?'Create your account':'Welcome back.';
-      description.textContent=recovering?'Use your saved recovery code to choose a new password.':privateRegistration?'Create your administrator account, or sign in if you already have one.':'Sign in to clean your own spreadsheet. Your file stays on your device.';
-      submit.textContent=recovering?'Reset password':creating?'Create account & continue':'Sign in & continue';
+      description.textContent=recovering?'We’ll email you a private link to choose a new password.':privateRegistration?'Create your administrator account, or sign in if you already have one.':'Sign in to clean your own spreadsheet. Your file stays on your device.';
+      submit.textContent=recovering?'Email me a reset link':creating?'Create account & continue':'Sign in & continue';
       if(privateRegistration&&!recovering){title.textContent=creating?'Your admin workspace.':'Sign in as administrator';submit.textContent=creating?'Create account & activate admin':'Sign in & activate admin';}
-      if(privateRegistration&&recovering)description.textContent='Reset your password with your recovery code, then sign in here to activate your admin invitation.';
-      error.hidden=true;error.className='notice';errorRecovery.hidden=true;
+      if(privateRegistration&&recovering)description.textContent='Reset your password using the email link, then return to this invitation to sign in.';
+      error.hidden=true;error.className='notice';errorRecovery.hidden=true;emailStatus.hidden=true;
       root.querySelector('[data-auth-mode="recover"]').hidden=value!=='login';
-      root.querySelectorAll('[data-auth-mode]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.authMode===value)));
+      root.querySelectorAll('[data-auth-mode]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.authMode===value)));lock(false);
     }
     root.querySelectorAll('[data-auth-mode]').forEach(b=>b.onclick=()=>mode(b.dataset.authMode));
-    errorRecovery.onclick=()=>{mode('recover');form.elements.recoveryCode.focus();};
+    errorRecovery.onclick=()=>{mode('recover');form.elements.email.focus();};
     mode(root.dataset.mode||'login');
     if(privateRegistration){
       const token=new URLSearchParams(location.hash.slice(1)).get('invite');history.replaceState(null,'',location.pathname);
       const status=root.querySelector('[data-invitation-status]');
       root.querySelectorAll('.auth-native,.auth-divider').forEach(el=>el.hidden=true);
-      form.querySelectorAll('input,button').forEach(el=>el.disabled=true);
+      lock(true);
       invitationReady=(async()=>{
         try{
           if(!token||!/^[a-f0-9]{64}$/.test(token))throw Error('Open your complete private registration link to continue.');
-          const data=await request('/api/admin/invitations/inspect',{token});adminInvitation=token;
+          const data=await request('/api/admin/invitations/inspect',{token});adminInvitation=token;invitationValid=true;
           form.elements.email.value=data.email;form.elements.email.readOnly=true;
           status.textContent='Private invitation for '+data.email+' · Expires '+new Date(data.expiresAt).toLocaleString()+'.';
-          form.querySelectorAll('input,button').forEach(el=>el.disabled=false);
-        }catch(e){status.textContent=e.message;root.querySelectorAll('.auth-tabs button,[data-auth-mode="recover"]').forEach(el=>el.disabled=true);}
+        }catch(e){status.textContent=e.message;}finally{lock(false);}
       })();
-    }
-    function showRecoveryCode(data,current){
-      codeView.textContent=data.recoveryCode;recoveryResult.hidden=false;
-      root.querySelectorAll('form,.auth-tabs,[data-auth-mode],.auth-native,.auth-divider').forEach(el=>el.hidden=true);
-      title.textContent=current==='recover'?'Password reset.':'You’re ready to tidy.';
-      const done=root.querySelector('[data-auth-done]');
-      done.textContent=current==='recover'?'I saved my new code — back to sign in':'I saved my code — continue';
-      done.onclick=()=>{
-        if(current!=='recover'){codeView.textContent='';complete();return;}
-        recoveryResult.hidden=true;codeView.textContent='';form.hidden=false;root.querySelector('.auth-tabs').hidden=false;
-        root.querySelectorAll('[data-auth-mode]').forEach(el=>el.hidden=false);
-        if(!privateRegistration)root.querySelectorAll('.auth-native,.auth-divider').forEach(el=>el.hidden=false);
-        mode('login');error.className='notice success';error.textContent='Password reset. Sign in with your new password'+(privateRegistration?' to activate admin access.':'.');error.hidden=false;form.elements.password.focus();
-      };
     }
     form.onsubmit=async e=>{
       e.preventDefault();if(submitting)return;
       const current=root.dataset.mode,fields=Object.fromEntries(new FormData(form));
-      error.hidden=true;error.className='notice';errorRecovery.hidden=true;submitting=true;
-      form.querySelectorAll('input,button').forEach(el=>el.disabled=true);
+      error.hidden=true;error.className='notice';errorRecovery.hidden=true;lock(true);
       try{
         await invitationReady;
         if(privateRegistration&&!adminInvitation)throw Error('This administrator invitation is invalid or expired.');
-        if(current!=='login'&&fields.password!==fields.confirmPassword)throw Error('Passwords do not match.');
+        if(current==='recover'){
+          const data=await request('/api/auth/password-reset/request',{email:fields.email});
+          emailStatus.textContent=data.message;emailStatus.hidden=false;retryAt=Date.now()+data.retryAfter*1000;
+          setTimeout(()=>{if(!submitting&&invitationValid&&Date.now()>=retryAt)submit.disabled=false;},data.retryAfter*1000);return;
+        }
+        if(current==='register'&&fields.password!==fields.confirmPassword)throw Error('Passwords do not match.');
         const data=await request('/api/auth/'+current,{...fields,...(privateRegistration?{adminInvitation}:{})});
-        form.elements.password.value='';form.elements.confirmPassword.value='';form.elements.recoveryCode.value='';
-        if(current==='recover')user=null;else{try{await session();}catch{user=data.user;}}
-        if(data.recoveryCode)showRecoveryCode(data,current);else complete();
+        form.elements.password.value='';form.elements.confirmPassword.value='';
+        try{await session();}catch{user=data.user;}complete();
       }catch(e){
         error.textContent=e.message;error.hidden=false;
-        if(current==='login'&&e.code==='invalid_credentials'){error.textContent='Email or password is incorrect. You can reset your password using your saved recovery code.';errorRecovery.hidden=false;}
-      }finally{submitting=false;form.querySelectorAll('input,button').forEach(el=>el.disabled=false);}
+        if(current==='login'&&e.code==='invalid_credentials'){error.textContent='Email or password is incorrect. You can request a password reset email.';errorRecovery.hidden=false;}
+      }finally{lock(false);}
     };
   }
   if(dialog){document.querySelector('[data-auth-close]').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{waiting?.(null);waiting=null;});}
@@ -111,16 +100,30 @@
   if(claim)claim.onsubmit=async e=>{e.preventDefault();const button=claim.querySelector('button'),notice=document.getElementById('adminClaimMessage');button.disabled=true;notice.hidden=true;try{await request('/api/admin/claim',{code:claim.elements.code.value});claim.elements.code.value='';location.assign('/admin');}catch(error){notice.textContent=error.message;notice.hidden=false;}finally{button.disabled=false;}};
   const passwordForm=document.getElementById('passwordChangeForm');
   if(passwordForm){
-    const notice=document.getElementById('passwordChangeMessage'),result=document.getElementById('passwordChangeResult'),code=document.getElementById('passwordChangeCode');
+    const notice=document.getElementById('passwordChangeMessage');
     passwordForm.onsubmit=async e=>{
       e.preventDefault();const fields=Object.fromEntries(new FormData(passwordForm));notice.hidden=true;notice.className='notice';
       passwordForm.querySelectorAll('input,button').forEach(el=>el.disabled=true);
       try{
         if(fields.password!==fields.confirmPassword)throw Error('New passwords do not match.');
-        const data=await request('/api/auth/password',fields);passwordForm.reset();passwordForm.hidden=true;code.textContent=data.recoveryCode;result.hidden=false;
+        await request('/api/auth/password',fields);passwordForm.reset();notice.className='notice success';notice.textContent='Your password has been updated. Your other sessions are signed out.';notice.hidden=false;
       }catch(error){notice.textContent=error.message;notice.hidden=false;}finally{passwordForm.querySelectorAll('input,button').forEach(el=>el.disabled=false);}
     };
-    document.getElementById('passwordChangeDone').onclick=()=>{result.hidden=true;code.textContent='';passwordForm.hidden=false;notice.className='notice success';notice.textContent='Your password and recovery code have been updated. Your other sessions are signed out.';notice.hidden=false;};
+  }
+  const resetRoot=document.querySelector('[data-password-reset-root]');
+  if(resetRoot){
+    let token=new URLSearchParams(location.hash.slice(1)).get('token'),busy=false;
+    history.replaceState(null,'',location.pathname);
+    const resetForm=document.getElementById('passwordResetForm'),status=document.getElementById('passwordResetStatus'),error=document.getElementById('passwordResetError');
+    (async()=>{
+      try{if(!token||!/^[a-f0-9]{64}$/.test(token))throw Error('Open the complete reset link from your email, or request a new email.');await request('/api/auth/password-reset/inspect',{token});status.textContent='Your link is valid. Choose a new password below.';resetForm.hidden=false;}
+      catch(e){token=null;status.textContent=e.message;status.className='notice';}
+    })();
+    resetForm.onsubmit=async e=>{
+      e.preventDefault();if(busy||!token)return;busy=true;error.hidden=true;const fields=Object.fromEntries(new FormData(resetForm));resetForm.querySelectorAll('input,button').forEach(el=>el.disabled=true);
+      try{if(fields.password!==fields.confirmPassword)throw Error('New passwords do not match.');await request('/api/auth/password-reset',{token,...fields});token=null;resetForm.reset();resetForm.hidden=true;status.hidden=true;document.getElementById('passwordResetSuccess').hidden=false;}
+      catch(e){error.textContent=e.message;error.hidden=false;}finally{busy=false;resetForm.querySelectorAll('input,button').forEach(el=>el.disabled=false);}
+    };
   }
   if(location.pathname==='/account')session().then(data=>{if(data.admin){const a=document.createElement('a');a.className='btn secondary';a.href='/admin';a.textContent='Admin dashboard ↗';document.querySelector('.account-heading')?.append(a);}}).catch(()=>{});
 })();

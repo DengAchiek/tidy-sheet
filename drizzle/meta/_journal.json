@@ -43,6 +43,13 @@
       "when": 1792446341646,
       "tag": "0005_outstanding_excalibur",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1792520149642,
+      "tag": "0006_short_giant_man",
+      "breakpoints": true
     }
   ]
 }

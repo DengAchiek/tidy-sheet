@@ -6,26 +6,28 @@ import ts from 'typescript';
 import {DatabaseSync} from 'node:sqlite';
 import * as nodeCrypto from 'node:crypto';
 import * as policy from '../server/policy.mjs';
-function compile(file,imports){const source=ts.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText,module={exports:{}};vm.runInNewContext(source,{module,exports:module.exports,require:n=>{if(!(n in imports))throw Error('Unexpected '+n);return imports[n];},console,URL,Request,Response,TextEncoder,TextDecoder,Buffer,crypto:nodeCrypto.webcrypto,Date});return module.exports;}
+function compile(file,imports,globals={}){const source=ts.transpileModule(fs.readFileSync(new URL(file,import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,esModuleInterop:true}}).outputText,module={exports:{}};vm.runInNewContext(source,{module,exports:module.exports,require:n=>{if(!(n in imports))throw Error('Unexpected '+n);return imports[n];},console,URL,Request,Response,TextEncoder,TextDecoder,Buffer,crypto:nodeCrypto.webcrypto,Date,AbortSignal,...globals});return module.exports;}
 function harness(){
  const sql=new DatabaseSync(':memory:');sql.exec('PRAGMA foreign_keys=ON');for(const file of fs.readdirSync(new URL('../drizzle/',import.meta.url)).filter(f=>f.endsWith('.sql')).sort())sql.exec(fs.readFileSync(new URL('../drizzle/'+file,import.meta.url),'utf8'));
  const DB={prepare(query){return {args:[],bind(...args){this.args=args;return this;},async first(){return sql.prepare(query).get(...this.args)||null;},async all(){return {results:sql.prepare(query).all(...this.args)};},async run(){return {meta:sql.prepare(query).run(...this.args)};}};},async batch(statements){sql.exec('BEGIN');try{const results=[];for(const s of statements)results.push(await s.run());sql.exec('COMMIT');return results;}catch(e){sql.exec('ROLLBACK');throw e;}}};
  const store=compile('../server/store.ts',{'cloudflare:workers':{env:{DB,TRIAL_DAYS:'0'}},'./policy.mjs':policy});let native=null;
- const env={};const auth=compile('../server/auth.ts',{'cloudflare:workers':{env},'node:crypto':nodeCrypto,'../app/chatgpt-auth':{getChatGPTUser:async()=>native},'./store':store,'./policy.mjs':policy});
+ const env={TIDYSHEET_IDENTITY_MODE:'disabled'},pending=[],mailRequests=[];let mailFailure=false;
+ const email=compile('../server/recovery-email.ts',{'cloudflare:workers':{env},'./policy.mjs':policy},{fetch:async(url,options)=>{const body=JSON.parse(options.body);mailRequests.push({url,options,body});return mailFailure?Response.json({error:'provider failure'},{status:503}):Response.json({id:nodeCrypto.randomUUID()});}});
+ const auth=compile('../server/auth.ts',{'cloudflare:workers':{env,waitUntil:p=>pending.push(p)},'./recovery-email':email,'node:crypto':nodeCrypto,'../app/chatgpt-auth':{getChatGPTUser:async()=>native},'./store':store,'./policy.mjs':policy});
  const analytics=compile('../server/analytics.ts',{'./store':store,'./auth':auth,'./policy.mjs':policy});
  const billing={billingMode:()=> 'live',getPlans:async()=>[null,null,null],billingReady:()=>false};
  const templates=Object.fromEntries(['landing','cleaner','privacy','training'].map(n=>['./templates/'+n+'.html?raw',fs.readFileSync(new URL('../server/templates/'+n+'.html',import.meta.url),'utf8')]));
- const render=compile('../server/render.ts',{...templates,'cloudflare:workers':{env:{TIDYSHEET_IDENTITY_MODE:'disabled'}},'./billing':billing});
+ const render=compile('../server/render.ts',{...templates,'cloudflare:workers':{env},'./recovery-email':email,'./billing':billing});
  const router=compile('../server/router.ts',{'./auth':auth,'./analytics':analytics,'./store':store,'./policy.mjs':policy,'./billing':billing,'./render':render});
- return {sql,env,store,auth,analytics,render,route:router.handleRequest,setNative:u=>native=u};
+ return {sql,env,store,auth,analytics,render,mailRequests,drain:()=>Promise.all(pending.splice(0)),failEmail:()=>mailFailure=true,route:router.handleRequest,setNative:u=>native=u};
 }
 const fixture={name:'Sample User',email:'sample@example.com',password:'local test account phrase 9284'};
 const req=(path='/api/auth/register',body,token='')=>new Request('https://example.com'+path,{method:body===undefined?'GET':'POST',headers:{Origin:'https://example.com','Content-Type':'application/json',...(token?{cookie:token}:{} )},...(body===undefined?{}:{body:JSON.stringify(body)})});
 async function signup(h,extra={}){const response=await h.route(req('/api/auth/register',{...fixture,...extra}));assert.equal(response.status,200,await response.clone().text());return {body:await response.json(),cookie:response.headers.get('set-cookie').split(';')[0]};}
 const event=(extra={})=>({id:nodeCrypto.randomUUID(),kind:'page_view',path:'/sheet-cleaner.html',sample:false,outcome:'success',...extra});
 test('Registration hashes credentials, starts an HttpOnly session, normalizes email, and grants no admin role',async()=>{
- const h=harness(),{body,cookie}=await signup(h,{email:' SAMPLE@example.com '});assert.equal(body.user.email,'sample@example.com');assert.equal(body.recoveryCode.length,40);
- const stored=await h.store.first('SELECT * FROM auth_credentials');assert.match(stored.password_hash,/^scrypt:16384:8:5:/);assert.ok(!stored.password_hash.includes(fixture.password));assert.notEqual(stored.recovery_hash,body.recoveryCode);
+ const h=harness(),{body,cookie}=await signup(h,{email:' SAMPLE@example.com '});assert.equal(body.user.email,'sample@example.com');assert.equal('recoveryCode' in body,false);
+ const stored=await h.store.first('SELECT * FROM auth_credentials');assert.match(stored.password_hash,/^scrypt:16384:8:5:/);assert.ok(!stored.password_hash.includes(fixture.password));assert.match(stored.recovery_hash,/^[a-f0-9]{64}$/);
  const session=await (await h.route(req('/api/session',undefined,cookie))).json();assert.equal(session.user.email,fixture.email);assert.equal(session.admin,false);assert.equal(session.access.business,true);assert.equal(session.access.training,false);
  const tokens=await h.store.all('SELECT * FROM auth_sessions');assert.notEqual(tokens[0].token_hash,cookie.split('=')[1]);
  assert.equal((await h.route(req('/api/admin/overview',undefined,cookie))).status,403);
@@ -45,15 +47,12 @@ test('Logout and expiry revoke access, cross-origin auth writes fail, forged coo
  assert.equal((await (await h.route(req('/api/session',undefined,'__Host-tidysheet='+'a'.repeat(64)))).json()).user,null);
  assert.equal((await h.route(req('/api/admin/overview'))).status,401);
 });
-test('Recovery codes are single-use, replace the password, and revoke every existing session',async()=>{
- const h=harness(),{cookie,body}=await signup(h);const password='a completely new testing phrase';
- assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password,recoveryCode:'0'.repeat(40)}))).status,401);
- const reset=await h.route(req('/api/auth/recover',{email:fixture.email,password,recoveryCode:body.recoveryCode}));assert.equal(reset.status,200);assert.notEqual((await reset.json()).recoveryCode,body.recoveryCode);
- assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,0);
- assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password,recoveryCode:body.recoveryCode}))).status,401);
- assert.equal((await h.route(req('/api/auth/login',fixture))).status,401);assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password}))).status,200);
- assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user,null);
+test('Saved recovery codes are retired and cannot change an account password',async()=>{
+ const h=harness(),{cookie}=await signup(h);const before=await h.store.first('SELECT password_hash FROM auth_credentials');
+ assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'some different testing phrase',recoveryCode:'0'.repeat(40)}))).status,410);
+ assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user.email,fixture.email);
 });
+
 test('Authentication throttles attempts and accepts neither null bodies nor email-only privilege claims',async()=>{
  const h=harness();for(let i=0;i<10;i++)assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password:'bad'}))).status,401);
  assert.equal((await h.route(req('/api/auth/login',fixture))).status,429);assert.equal((await h.route(req('/api/auth/register',null))).status,400);
@@ -131,8 +130,8 @@ test('Creating a secret link disables its old setup code and a consumed bootstra
  assert.equal((await other.route(req('/api/admin/invitations/create',{code}))).status,409);
 });
 
-test('Forgot password and security pages expose recovery and confirmation without allowing anonymous changes',async()=>{
- const h=harness(),page=await h.route(req('/forgot-password?returnTo=%2Faccount%2Fsecurity'));assert.equal(page.status,200);const html=await page.text();assert.match(html,/data-mode="recover"/);assert.match(html,/name="recoveryCode"/);assert.match(html,/name="confirmPassword"/);assert.match(html,/Forgot password\?/);assert.match(html,/data-auth-return="\/account\/security"/);
+test('Forgot password offers email links and security changes still require authentication',async()=>{
+ const h=harness(),page=await h.route(req('/forgot-password?returnTo=%2Faccount%2Fsecurity'));assert.equal(page.status,200);const html=await page.text();assert.match(html,/data-mode="recover"/);assert.doesNotMatch(html,/name="recoveryCode"/);assert.match(html,/Email me a reset link/);assert.match(html,/Password reset emails are being set up/);assert.match(html,/Forgot password\?/);assert.match(html,/data-auth-return="\/account\/security"/);
  assert.equal((await h.route(req('/account/security'))).headers.get('location'),'/login?returnTo=%2Faccount%2Fsecurity');
  assert.equal((await h.route(req('/api/auth/password',{password:'new test password phrase',confirmPassword:'new test password phrase',currentPassword:'unknown'}))).status,401);
  const {cookie}=await signup(h);const security=await h.route(req('/account/security',undefined,cookie));assert.equal(security.status,200);assert.match(await security.text(),/Current password/);
@@ -145,29 +144,79 @@ test('Password changes verify the current password, require confirmation and rej
  assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password:fixture.password,confirmPassword:fixture.password},cookie))).status,400);
  assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,1);
 });
-test('A password change rotates recovery and all sessions, keeps the current browser signed in, and preserves roles',async()=>{
+test('A password change rotates sessions, keeps the current browser signed in, and preserves roles without returning codes',async()=>{
  const h=harness(),{cookie,body}=await signup(h),account=await h.auth.currentUser(req('/',undefined,cookie));await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',account.userId,Date.now());
  const second=await h.route(req('/api/auth/login',fixture));const otherCookie=second.headers.get('set-cookie').split(';')[0],password='changed testing password phrase 581';
- const response=await h.route(req('/api/auth/password',{currentPassword:fixture.password,password,confirmPassword:password},cookie));assert.equal(response.status,200);const data=await response.json();assert.equal(data.changed,true);assert.notEqual(data.recoveryCode,body.recoveryCode);
+ const response=await h.route(req('/api/auth/password',{currentPassword:fixture.password,password,confirmPassword:password},cookie));assert.equal(response.status,200);const data=await response.json();assert.equal(data.changed,true);assert.equal('recoveryCode' in data,false);
  const fresh=response.headers.get('set-cookie').split(';')[0];for(const old of [cookie,otherCookie])assert.equal((await (await h.route(req('/api/session',undefined,old))).json()).user,null);
  const session=await (await h.route(req('/api/session',undefined,fresh))).json();assert.equal(session.user.id,account.userId);assert.equal(session.admin,true);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,1);
  assert.equal((await h.route(req('/api/auth/login',fixture))).status,401);assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password}))).status,200);
- assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another recovery password phrase',recoveryCode:body.recoveryCode}))).status,401);
- assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another recovery password phrase',recoveryCode:data.recoveryCode}))).status,200);
+
 });
-test('Recovery preserves an unused admin invitation until the user signs in with the new password',async()=>{
- const h=harness(),{body}=await signup(h),invitation=await issue(h),password='recovered admin testing phrase 927';
- assert.equal((await h.route(req('/api/auth/login',{...fixture,password:'incorrect',adminInvitation:invitation.token}))).status,401);
- assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password,confirmPassword:password,recoveryCode:body.recoveryCode,adminInvitation:invitation.token}))).status,200);
- assert.equal((await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}))).status,200);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
- const response=await h.route(req('/api/auth/login',{email:fixture.email,password,adminInvitation:invitation.token}));assert.equal(response.status,200);const cookie=response.headers.get('set-cookie').split(';')[0];assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).admin,true);
-});
-test('Confirmation mismatches do not register an account or consume a recovery code',async()=>{
+
+
+test('Confirmation mismatches do not register an account',async()=>{
  const h=harness();assert.equal((await h.route(req('/api/auth/register',{...fixture,confirmPassword:'different'}))).status,400);assert.equal((await h.store.all('SELECT * FROM accounts')).length,0);
- const {body}=await signup(h),before=await h.store.first('SELECT recovery_hash FROM auth_credentials');assert.equal((await h.route(req('/api/auth/recover',{email:fixture.email,password:'another test password phrase',confirmPassword:'different',recoveryCode:body.recoveryCode}))).status,400);assert.equal((await h.store.first('SELECT recovery_hash FROM auth_credentials')).recovery_hash,before.recovery_hash);
 });
+
 test('ChatGPT identities cannot change an unlinked password account with the same email',async()=>{
  const h=harness();await signup(h);h.setNative({userId:'native-other-account',email:fixture.email,displayName:'Native',fullName:'Native'});
  const page=await h.route(req('/account/security'));assert.equal(page.status,200);assert.doesNotMatch(await page.text(),/id="passwordChangeForm"/);
  assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password:'different testing phrase 192',confirmPassword:'different testing phrase 192'}))).status,403);
+});
+
+function configureEmail(h){Object.assign(h.env,{RESEND_API_KEY:'test-send-only-token',RECOVERY_EMAIL_FROM:'recovery@example.test',APP_URL:'https://example.com'});}
+async function emailed(h,email=fixture.email){const response=await h.route(req('/api/auth/password-reset/request',{email}));assert.equal(response.status,202,await response.clone().text());await h.drain();return response;}
+const receivedLink=h=>new URL(h.mailRequests.at(-1).body.text.match(/https:\/\/[^\s]+/)[0]);
+const receivedToken=h=>new URLSearchParams(receivedLink(h).hash.slice(1)).get('token');
+test('Email reset requests send a private expiring link without disclosing accounts or tokens in API responses',async()=>{
+ const h=harness();configureEmail(h);const {cookie}=await signup(h),unknown=await emailed(h,'absent@example.com'),known=await emailed(h);
+ assert.deepEqual(await known.json(),await unknown.json());assert.equal(h.mailRequests.length,1);
+ const mail=h.mailRequests[0],token=receivedToken(h),stored=await h.store.first('SELECT * FROM auth_password_resets');assert.match(token,/^[a-f0-9]{64}$/);assert.equal(stored.token_hash,h.auth.digest(token));assert.notEqual(stored.token_hash,token);assert.equal(stored.ready,1);assert.ok(stored.expires_at>Date.now()+590000);
+ assert.equal(mail.url,'https://api.resend.com/emails');assert.deepEqual(mail.body.to,[fixture.email]);assert.equal(mail.body.from,'TidySheet <recovery@example.test>');assert.equal(mail.options.redirect,'error');assert.equal(mail.options.headers.Authorization,'Bearer test-send-only-token');assert.equal(receivedLink(h).pathname,'/reset-password');assert.equal(receivedLink(h).search,'');assert.doesNotMatch(mail.body.text,/recovery code/);
+ assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user.email,fixture.email,'requesting a link does not change the password or sessions');
+});
+test('An emailed link changes the password once, revokes every old session, and preserves admin membership',async()=>{
+ const h=harness();configureEmail(h);const {cookie}=await signup(h),user=await h.auth.currentUser(req('/',undefined,cookie));await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',user.userId,Date.now());await emailed(h);const token=receivedToken(h),password='new emailed recovery password phrase',payload={token,password,confirmPassword:password};
+ for(let i=0;i<2;i++){const inspected=await h.route(req('/api/auth/password-reset/inspect',{token}));assert.equal(inspected.status,200);assert.deepEqual(await inspected.json(),{valid:true});}
+ const response=await h.route(req('/api/auth/password-reset',payload));assert.equal(response.status,200);assert.deepEqual(await response.json(),{reset:true});assert.equal((await h.store.all('SELECT * FROM auth_password_resets')).length,0);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,0);assert.equal((await h.store.all('SELECT * FROM administrators')).length,1);
+ assert.equal((await h.route(req('/api/auth/password-reset',payload))).status,401);assert.equal((await h.route(req('/api/auth/login',fixture))).status,401);assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password}))).status,200);
+});
+test('Reset links reject invalid proofs, expiry, undelivered links, and links invalidated by password changes',async()=>{
+ for(const kind of ['invalid','expired','not-ready','password-change']){
+  const h=harness();configureEmail(h);const {cookie}=await signup(h);await emailed(h);let token=receivedToken(h);const password='replacement email recovery testing phrase';
+  if(kind==='invalid')token='0'.repeat(64);
+  if(kind==='expired')await h.store.run('UPDATE auth_password_resets SET expires_at=0');
+  if(kind==='not-ready')await h.store.run('UPDATE auth_password_resets SET ready=0');
+  if(kind==='password-change')assert.equal((await h.route(req('/api/auth/password',{currentPassword:fixture.password,password,confirmPassword:password},cookie))).status,200);
+  assert.equal((await h.route(req('/api/auth/password-reset',{token,password,confirmPassword:password}))).status,401,kind);
+ }
+});
+test('Reset sending has a cooldown and replacement links invalidate old ones',async()=>{
+ const h=harness();configureEmail(h);await signup(h);await emailed(h);const first=receivedToken(h);await emailed(h);assert.equal(h.mailRequests.length,1);
+ await h.store.run('UPDATE auth_password_resets SET created_at=created_at-61000');await emailed(h);const next=receivedToken(h);assert.notEqual(next,first);const password='reset link replacement test phrase 291';
+ assert.equal((await h.route(req('/api/auth/password-reset',{token:first,password,confirmPassword:password}))).status,401);
+ assert.equal((await h.route(req('/api/auth/password-reset',{token:next,password,confirmPassword:password}))).status,200);
+});
+test('Unconfigured email is explicit and provider failure cannot create a usable link or alter credentials',async()=>{
+ const h=harness();await signup(h);for(const email of [fixture.email,'absent@example.com'])assert.equal((await h.route(req('/api/auth/password-reset/request',{email}))).status,503);
+ const before=await h.store.first('SELECT password_hash FROM auth_credentials');configureEmail(h);h.failEmail();await emailed(h);assert.equal((await h.store.all('SELECT * FROM auth_password_resets')).length,0);assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.route(req('/api/auth/login',fixture))).status,200);
+});
+test('Reset operations enforce same-origin writes, email sending limits, confirmation, and password strength',async()=>{
+ const h=harness();configureEmail(h);await signup(h);const cross=new Request('https://example.com/api/auth/password-reset/request',{method:'POST',headers:{origin:'https://evil.example'},body:JSON.stringify({email:fixture.email})});assert.equal((await h.route(cross)).status,403);
+ for(let i=0;i<5;i++)await emailed(h);assert.equal((await h.route(req('/api/auth/password-reset/request',{email:fixture.email}))).status,429);assert.equal(h.mailRequests.length,1);
+ const token=receivedToken(h),password='different emailed reset password phrase';
+ assert.equal((await h.route(req('/api/auth/password-reset',{token,password,confirmPassword:'different'}))).status,400);assert.equal((await h.route(req('/api/auth/password-reset',{token,password:'short',confirmPassword:'short'}))).status,400);
+ assert.equal((await h.route(req('/api/auth/password-reset',{token,password,confirmPassword:password}))).status,200);
+});
+test('An email reset preserves an unused admin invitation and cannot grant or restore admin membership',async()=>{
+ const h=harness();configureEmail(h);await signup(h);const invitation=await issue(h);await emailed(h);const password='email reset before admin activation phrase';
+ assert.equal((await h.route(req('/api/auth/password-reset',{token:receivedToken(h),password,confirmPassword:password,adminInvitation:invitation.token}))).status,200);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);assert.equal((await h.route(req('/api/admin/invitations/inspect',{token:invitation.token}))).status,200);
+ const response=await h.route(req('/api/auth/login',{email:fixture.email,password,adminInvitation:invitation.token}));assert.equal(response.status,200);assert.equal((await h.store.all('SELECT * FROM administrators')).length,1);
+ await h.store.run('DELETE FROM administrators');await h.store.run('DELETE FROM auth_rate_limits');await emailed(h);const another='password reset cannot restore admin phrase';assert.equal((await h.route(req('/api/auth/password-reset',{token:receivedToken(h),password:another,confirmPassword:another}))).status,200);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+});
+test('Reset pages use a private fragment link and never render a saved-code input or code result',async()=>{
+ const h=harness();const page=await h.route(req('/reset-password'));assert.equal(page.status,200);assert.equal(page.headers.get('Referrer-Policy'),'no-referrer');assert.equal(page.headers.get('X-Robots-Tag'),'noindex, nofollow');assert.match(await page.text(),/id="passwordResetForm"/);
+ for(const path of ['/login','/register','/forgot-password','/admin/register']){const html=await (await h.route(req(path))).text();assert.doesNotMatch(html,/name="recoveryCode"|data-recovery-result|Save your recovery code/);}
+ configureEmail(h);const html=await (await h.route(req('/forgot-password'))).text();assert.match(html,/data-email-ready="true"/);assert.doesNotMatch(html,/<button[^>]*data-auth-submit disabled/);
 });

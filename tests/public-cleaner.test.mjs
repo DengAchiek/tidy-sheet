@@ -23,7 +23,7 @@ function app(identity=null) {
   const templates = Object.fromEntries(['landing','cleaner','training','privacy'].map(name => [
     './templates/'+name+'.html?raw', fs.readFileSync(new URL('../server/templates/'+name+'.html', import.meta.url),'utf8'),
   ]));
-  const render = compile('../server/render.ts', { ...templates, 'cloudflare:workers': { env: {} }, './billing': billing });
+  const render = compile('../server/render.ts', { ...templates, 'cloudflare:workers': { env: {} }, './billing': billing, './recovery-email': { recoveryEmailReady: () => false } });
   return compile('../server/router.ts', {
     './auth': { currentUser: async () => identity }, './analytics': {},
     './store': { accountFor: unavailable, subscriptionFor: unavailable, first: unavailable, all: unavailable, run: unavailable },

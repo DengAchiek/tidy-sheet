@@ -2,7 +2,8 @@ import {scrypt,randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {getChatGPTUser} from '../app/chatgpt-auth';
 import {database,first,run} from './store';
 import {AppError} from './policy.mjs';
-import {env} from 'cloudflare:workers';
+import {env,waitUntil} from 'cloudflare:workers';
+import {requireRecoveryEmail,sendRecoveryEmail} from './recovery-email';
 
 export type User={userId:string,email:string,displayName:string,fullName:string|null,authSource?:'password'|'chatgpt'};
 const AGE=7*86400000;
@@ -79,21 +80,21 @@ export async function register(request:Request,body:any){
   await rateLimit(request,'register',email,5);
   const invite=body.adminInvitation===undefined?null:await invitationFor(body.adminInvitation,email);
   const encoded=await hashPassword(secret);
-  if(await first('SELECT user_id FROM auth_credentials WHERE email=?',email))throw new AppError(409,'account_unavailable','Unable to register this email. Try signing in or use your recovery code.');
-  const userId='local:'+crypto.randomUUID(),now=Date.now(),recovery=randomBytes(20).toString('hex'),db=database();
+  if(await first('SELECT user_id FROM auth_credentials WHERE email=?',email))throw new AppError(409,'account_unavailable','Unable to register this email. Try signing in or request a password reset email.');
+  const userId='local:'+crypto.randomUUID(),now=Date.now(),legacyRecoveryHash=digest(randomBytes(32).toString('hex')),db=database();
   if(invite){
     const results=await db.batch([
       db.prepare('INSERT INTO accounts (id,email,name,created_at,trial_ends) SELECT ?,?,?,?,0 WHERE EXISTS (SELECT 1 FROM admin_invitations WHERE token_hash=? AND used_at IS NULL AND expires_at>?)').bind(userId,email,name,now,invite.token_hash,now),
-      db.prepare('INSERT INTO auth_credentials (user_id,email,password_hash,recovery_hash) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=?)').bind(userId,email,encoded,digest(recovery),userId),
+      db.prepare('INSERT INTO auth_credentials (user_id,email,password_hash,recovery_hash) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM accounts WHERE id=?)').bind(userId,email,encoded,legacyRecoveryHash,userId),
       db.prepare('UPDATE admin_invitations SET used_at=?,used_by=? WHERE token_hash=? AND used_at IS NULL AND expires_at>? AND EXISTS (SELECT 1 FROM accounts WHERE id=?)').bind(now,userId,invite.token_hash,now,userId),
       db.prepare('INSERT INTO administrators (user_id,created_at) SELECT ?,? WHERE EXISTS (SELECT 1 FROM admin_invitations WHERE token_hash=? AND used_by=?)').bind(userId,now,invite.token_hash,userId),
     ]);
     if(!results[0].meta.changes)throw new AppError(410,'invitation_used','This registration link has expired or already been used.');
   }else await db.batch([
     db.prepare('INSERT INTO accounts (id,email,name,created_at,trial_ends) VALUES (?,?,?,?,0)').bind(userId,email,name,now),
-    db.prepare('INSERT INTO auth_credentials (user_id,email,password_hash,recovery_hash) VALUES (?,?,?,?)').bind(userId,email,encoded,digest(recovery)),
+    db.prepare('INSERT INTO auth_credentials (user_id,email,password_hash,recovery_hash) VALUES (?,?,?,?)').bind(userId,email,encoded,legacyRecoveryHash),
   ]);
-  return {user:{userId,email,displayName:name,fullName:name,authSource:'password' as const},setCookie:await newSession(request,userId),recoveryCode:recovery};
+  return {user:{userId,email,displayName:name,fullName:name,authSource:'password' as const},setCookie:await newSession(request,userId)};
 }
 export async function login(request:Request,body:any){
   const email=normalizeEmail(body.email),secret=typeof body.password==='string'&&body.password.length<=128?body.password:'';
@@ -105,15 +106,43 @@ export async function login(request:Request,body:any){
   if(body.adminInvitation!==undefined)await activateInvitation(row.user_id,email,body.adminInvitation);
   return {user:{userId:row.user_id,email,displayName:row.name,fullName:row.name,authSource:'password' as const},setCookie:await newSession(request,row.user_id)};
 }
-export async function recover(request:Request,body:any){
-  const email=normalizeEmail(body.email),secret=password(body.password);await rateLimit(request,'recover',email,5);
-  if(body.confirmPassword!==undefined&&body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','New passwords do not match.');
-  const row=await first('SELECT * FROM auth_credentials WHERE email=?',email),code=typeof body.recoveryCode==='string'?body.recoveryCode.trim():'';
-  if(!row||! /^[a-f0-9]{40}$/.test(code)||!timingSafeEqual(Buffer.from(digest(code),'hex'),Buffer.from(row.recovery_hash,'hex')))throw new AppError(401,'invalid_recovery','Email or recovery code is incorrect.');
-  const next=randomBytes(20).toString('hex'),encoded=await hashPassword(secret),db=database();
-  const results=await db.batch([db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND recovery_hash=?').bind(encoded,digest(next),row.user_id,row.recovery_hash),db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND recovery_hash=?)').bind(row.user_id,row.user_id,digest(next))]);
-  if(!results[0].meta.changes)throw new AppError(401,'invalid_recovery','Email or recovery code is incorrect.');
-  return {setCookie:sessionCookie(request,'',0),recoveryCode:next};
+const invalidReset=()=>new AppError(401,'invalid_password_reset','This password reset link is invalid, expired, or already used. Request a new email.');
+export async function requestPasswordReset(request:Request,body:any){
+  const email=normalizeEmail(body.email);await rateLimit(request,'password-reset-send',email,5);requireRecoveryEmail();
+  // Account lookup and delivery run after the same response for known and unknown emails.
+  waitUntil(deliverPasswordReset(email,request).catch(()=>{console.warn('TidySheet password reset email delivery failed.');}));
+  return {accepted:true,retryAfter:60,message:'If this address has a password account, check your inbox and spam folder for a password reset link. The newest link expires in 10 minutes.'};
+}
+async function deliverPasswordReset(email:string,request:Request){
+  const row=await first('SELECT user_id,password_hash FROM auth_credentials WHERE email=?',email);if(!row)return;
+  const now=Date.now(),token=randomBytes(32).toString('hex'),tokenHash=digest(token);
+  await run('DELETE FROM auth_password_resets WHERE user_id IN (SELECT user_id FROM auth_password_resets WHERE expires_at<? LIMIT 100)',now);
+  const reserved=await first('INSERT INTO auth_password_resets (user_id,token_hash,credential_hash,expires_at,created_at,ready) VALUES (?,?,?,?,?,0) ON CONFLICT(user_id) DO UPDATE SET token_hash=excluded.token_hash,credential_hash=excluded.credential_hash,expires_at=excluded.expires_at,created_at=excluded.created_at,ready=0 WHERE auth_password_resets.created_at<=? RETURNING token_hash',row.user_id,tokenHash,row.password_hash,now+600000,now,now-60000);
+  if(!reserved)return;
+  try{
+    await sendRecoveryEmail(email,token,request);
+    await run('UPDATE auth_password_resets SET ready=1 WHERE user_id=? AND token_hash=?',row.user_id,tokenHash);
+  }catch(error){await run('DELETE FROM auth_password_resets WHERE user_id=? AND token_hash=?',row.user_id,tokenHash);throw error;}
+}
+async function passwordResetFor(token:unknown){
+  if(typeof token!=='string'||! /^[a-f0-9]{64}$/.test(token))throw invalidReset();
+  const row=await first('SELECT r.* FROM auth_password_resets r JOIN auth_credentials c ON c.user_id=r.user_id AND c.password_hash=r.credential_hash WHERE r.token_hash=? AND r.ready=1 AND r.expires_at>?',digest(token),Date.now());
+  if(!row)throw invalidReset();return row;
+}
+export async function inspectPasswordReset(request:Request,body:any){
+  await rateLimit(request,'password-reset-view',typeof body.token==='string'?body.token:'',30);await passwordResetFor(body.token);return {valid:true};
+}
+export async function resetPassword(request:Request,body:any){
+  await rateLimit(request,'password-reset-use',typeof body.token==='string'?body.token:'',5);
+  const secret=password(body.password);if(body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','New passwords do not match.');
+  const row=await passwordResetFor(body.token),encoded=await hashPassword(secret),db=database(),now=Date.now();
+  const results=await db.batch([
+    db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND password_hash=? AND EXISTS (SELECT 1 FROM auth_password_resets WHERE user_id=? AND token_hash=? AND ready=1 AND expires_at>?)').bind(encoded,digest(randomBytes(32).toString('hex')),row.user_id,row.credential_hash,row.user_id,row.token_hash,now),
+    db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(row.user_id,row.user_id,encoded),
+    db.prepare('DELETE FROM auth_password_resets WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(row.user_id,row.user_id,encoded),
+  ]);
+  if(!results[0].meta.changes)throw invalidReset();
+  return {setCookie:sessionCookie(request,'',0)};
 }
 export async function changePassword(request:Request,body:any){
   const user=await currentUser(request);if(!user)throw new AppError(401,'sign_in_required','Sign in to change your password.');
@@ -124,13 +153,14 @@ export async function changePassword(request:Request,body:any){
   const row=await first('SELECT * FROM auth_credentials WHERE user_id=?',user.userId);
   if(!row||!await verifyPassword(current,row.password_hash))throw new AppError(401,'incorrect_password','Your current password is incorrect. Use Forgot password if you cannot remember it.');
   if(current===secret)throw new AppError(400,'password_unchanged','Choose a different password.');
-  const encoded=await hashPassword(secret),recovery=randomBytes(20).toString('hex'),token=randomBytes(32).toString('hex'),now=Date.now(),db=database();
+  const encoded=await hashPassword(secret),legacyRecoveryHash=digest(randomBytes(32).toString('hex')),token=randomBytes(32).toString('hex'),now=Date.now(),db=database();
   const results=await db.batch([
-    db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND password_hash=?').bind(encoded,digest(recovery),user.userId,row.password_hash),
+    db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND password_hash=?').bind(encoded,legacyRecoveryHash,user.userId,row.password_hash),
     db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(user.userId,user.userId,encoded),
     db.prepare('INSERT INTO auth_sessions (token_hash,user_id,expires_at,created_at) SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(digest(token),user.userId,now+AGE,now,user.userId,encoded),
+    db.prepare('DELETE FROM auth_password_resets WHERE user_id=? AND EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)').bind(user.userId,user.userId,encoded),
   ]);
   if(!results[0].meta.changes)throw new AppError(409,'credentials_changed','Your password has changed. Sign in again before retrying.');
-  return {setCookie:sessionCookie(request,token),recoveryCode:recovery};
+  return {setCookie:sessionCookie(request,token)};
 }
 export async function logout(request:Request){const token=cookie(request,sessionName(request));if(token)await run('DELETE FROM auth_sessions WHERE token_hash=?',digest(token));return sessionCookie(request,'',0);}

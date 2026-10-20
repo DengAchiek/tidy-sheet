@@ -12,5 +12,7 @@ declare namespace Cloudflare {
     APP_URL?:string;
     TRIAL_DAYS?:string;
     SUPPORT_EMAIL?:string;
+    RESEND_API_KEY?:string;
+    RECOVERY_EMAIL_FROM?:string;
   }
 }
