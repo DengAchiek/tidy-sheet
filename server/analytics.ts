@@ -2,7 +2,7 @@ import {first,all,run,accountFor} from './store';
 import {cookie,rateLimit,User} from './auth';
 import {AppError} from './policy.mjs';
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
-const PATHS=['/','/index.html','/sheet-cleaner.html','/cleaner','/choose','/training','/account','/account/security','/forgot-password','/reset-password','/login','/register','/admin','/admin/register','/privacy.html'];
+const PATHS=['/','/index.html','/sheet-cleaner.html','/cleaner','/choose','/training','/account','/account/security','/forgot-password','/reset-password','/login','/register','/admin','/admin/register','/admin/setup','/privacy.html'];
 function visitorCookie(id:string,request:Request){return 'tidysheet-visitor='+id+'; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000'+(new URL(request.url).protocol==='https:'?'; Secure':'');}
 export async function telemetry(request:Request,body:any,user:User|null){
   const keys=['id','kind','path','sample','outcome','durationMs','rows','columns'];

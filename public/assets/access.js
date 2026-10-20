@@ -125,5 +125,31 @@
       catch(e){error.textContent=e.message;error.hidden=false;}finally{busy=false;resetForm.querySelectorAll('input,button').forEach(el=>el.disabled=false);}
     };
   }
+  const setupRoot=document.querySelector('[data-admin-setup-root]');
+  if(setupRoot){
+    let token=new URLSearchParams(location.hash.slice(1)).get('invite'),busy=false;
+    history.replaceState(null,'',location.pathname);
+    const form=document.getElementById('adminSetupForm'),status=document.getElementById('adminSetupStatus'),error=document.getElementById('adminSetupError');
+    (async()=>{
+      try{
+        if(!token||!/^[a-f0-9]{64}$/.test(token))throw Error('Open your complete private admin setup link to continue.');
+        const data=await request('/api/admin/setup/inspect',{token});
+        form.elements.email.value=data.email;
+        status.textContent='Private setup for '+data.email+' · Expires '+new Date(data.expiresAt).toLocaleString()+'.';
+        form.hidden=false;
+      }catch(e){token=null;status.textContent=e.message;status.className='notice';}
+    })();
+    form.onsubmit=async e=>{
+      e.preventDefault();if(busy||!token)return;busy=true;error.hidden=true;
+      const fields=Object.fromEntries(new FormData(form));form.querySelectorAll('input,button').forEach(el=>el.disabled=true);
+      try{
+        if(fields.password!==fields.confirmPassword)throw Error('Passwords do not match.');
+        await request('/api/admin/setup',{token,...fields});token=null;form.reset();location.assign('/admin');
+      }catch(e){
+        error.textContent=e.message;error.hidden=false;
+        if(['invalid_invitation','invitation_expired','invitation_used','setup_unavailable'].includes(e.code)){token=null;form.reset();form.hidden=true;status.textContent=e.message;status.className='notice';}
+      }finally{busy=false;form.querySelectorAll('input,button').forEach(el=>el.disabled=false);}
+    };
+  }
   if(location.pathname==='/account')session().then(data=>{if(data.admin){const a=document.createElement('a');a.className='btn secondary';a.href='/admin';a.textContent='Admin dashboard ↗';document.querySelector('.account-heading')?.append(a);}}).catch(()=>{});
 })();

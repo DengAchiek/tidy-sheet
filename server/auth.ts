@@ -36,20 +36,55 @@ export async function claimAdmin(request:Request,body:any){
 export async function issueAdminInvitation(request:Request,body:any){
   const code=typeof body.code==='string'?body.code.trim():'';await rateLimit(request,'admin-invite-create',code,5);
   if(!env.ADMIN_INVITE_EMAIL||!env.ADMIN_INVITE_HASH||! /^[a-f0-9]{40}$/.test(code)||! /^[a-f0-9]{64}$/.test(env.ADMIN_INVITE_HASH)||!timingSafeEqual(Buffer.from(digest(code),'hex'),Buffer.from(env.ADMIN_INVITE_HASH,'hex')))throw new AppError(403,'invalid_invitation','Invalid administrator setup code.');
+  const purpose=body.purpose===undefined?'register':body.purpose;
+  if(!['register','admin_setup'].includes(purpose))throw new AppError(400,'invalid_invitation_purpose','Choose a valid invitation type.');
   const token=randomBytes(32).toString('hex'),now=Date.now(),expiresAt=now+24*3600000;
-  const created=await first('INSERT INTO admin_invitations (token_hash,source_hash,email,expires_at,created_at) SELECT ?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM admin_invite_claims WHERE invite_hash=?) AND NOT EXISTS (SELECT 1 FROM admin_invitations WHERE source_hash=?) RETURNING token_hash',digest(token),env.ADMIN_INVITE_HASH,env.ADMIN_INVITE_EMAIL.trim().toLowerCase(),expiresAt,now,env.ADMIN_INVITE_HASH,env.ADMIN_INVITE_HASH);
+  const created=await first('INSERT INTO admin_invitations (token_hash,source_hash,email,expires_at,created_at,purpose) SELECT ?,?,?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM admin_invite_claims WHERE invite_hash=?) AND NOT EXISTS (SELECT 1 FROM admin_invitations WHERE source_hash=?) RETURNING token_hash',digest(token),env.ADMIN_INVITE_HASH,env.ADMIN_INVITE_EMAIL.trim().toLowerCase(),expiresAt,now,purpose,env.ADMIN_INVITE_HASH,env.ADMIN_INVITE_HASH);
   if(!created)throw new AppError(409,'invitation_unavailable','This setup invitation has already been used or replaced.');
-  return {token,email:env.ADMIN_INVITE_EMAIL.trim().toLowerCase(),expiresAt};
+  return {token,email:env.ADMIN_INVITE_EMAIL.trim().toLowerCase(),expiresAt,purpose};
 }
-async function invitationFor(token:unknown,email?:string){
+async function invitationFor(token:unknown,email?:string,purpose='register'){
   if(typeof token!=='string'||! /^[a-f0-9]{64}$/.test(token))throw new AppError(403,'invalid_invitation','This private registration link is invalid.');
   const row=await first('SELECT * FROM admin_invitations WHERE token_hash=?',digest(token));
-  if(!row||row.source_hash!==env.ADMIN_INVITE_HASH||row.email!==env.ADMIN_INVITE_EMAIL?.trim().toLowerCase()||(email&&row.email!==email))throw new AppError(403,'invalid_invitation','This link is invalid or the email address does not match the invitation.');
+  if(!row||row.purpose!==purpose||row.source_hash!==env.ADMIN_INVITE_HASH||row.email!==env.ADMIN_INVITE_EMAIL?.trim().toLowerCase()||(email&&row.email!==email))throw new AppError(403,'invalid_invitation','This link is invalid or the email address does not match the invitation.');
   if(row.used_at!==null)throw new AppError(410,'invitation_used','This link has already been used. Sign in to your administrator account.');
   if(row.expires_at<=Date.now())throw new AppError(410,'invitation_expired','This private registration link has expired.');
   return row;
 }
 export async function inspectAdminInvitation(request:Request,body:any){await rateLimit(request,'admin-invite-view',typeof body.token==='string'?body.token:'',30);const row=await invitationFor(body.token);return {email:row.email,expiresAt:row.expires_at};}
+export async function inspectAdminSetup(request:Request,body:any){
+  await rateLimit(request,'admin-setup-view',typeof body.token==='string'?body.token:'',30);
+  const row=await invitationFor(body.token,undefined,'admin_setup');return {email:row.email,expiresAt:row.expires_at};
+}
+export async function completeAdminSetup(request:Request,body:any){
+  await rateLimit(request,'admin-setup-use',typeof body.token==='string'?body.token:'',5);
+  const email=normalizeEmail(body.email),secret=password(body.password),name=typeof body.name==='string'?body.name.trim():'';
+  if(body.confirmPassword!==secret)throw new AppError(400,'password_mismatch','Passwords do not match.');
+  if(name.length<2||name.length>80)throw new AppError(400,'invalid_name','Enter your name, between 2 and 80 characters.');
+  const invite=await invitationFor(body.token,email,'admin_setup');
+  const existing=await first('SELECT user_id,password_hash FROM auth_credentials WHERE email=?',email);
+  const encoded=await hashPassword(secret),userId=existing?.user_id||'local:'+crypto.randomUUID(),now=Date.now(),claim=randomBytes(32).toString('hex'),token=randomBytes(32).toString('hex'),legacyHash=digest(randomBytes(32).toString('hex')),db=database();
+  // A unique claim binds every statement to the winning use, including concurrent submissions.
+  const proof='EXISTS (SELECT 1 FROM admin_invitations WHERE token_hash=? AND claim_hash=?)';
+  const consume=db.prepare('UPDATE admin_invitations SET used_at=?,claim_hash=? WHERE token_hash=? AND purpose=\'admin_setup\' AND used_at IS NULL AND expires_at>? AND '+(existing?'EXISTS (SELECT 1 FROM auth_credentials WHERE user_id=? AND password_hash=?)':'NOT EXISTS (SELECT 1 FROM auth_credentials WHERE email=?)')).bind(now,claim,invite.token_hash,now,...(existing?[userId,existing.password_hash]:[email]));
+  const accountStatements=existing?[
+    db.prepare('UPDATE accounts SET name=? WHERE id=? AND '+proof).bind(name,userId,invite.token_hash,claim),
+    db.prepare('UPDATE auth_credentials SET password_hash=?,recovery_hash=? WHERE user_id=? AND '+proof).bind(encoded,legacyHash,userId,invite.token_hash,claim),
+  ]:[
+    db.prepare('INSERT INTO accounts (id,email,name,created_at,trial_ends) SELECT ?,?,?,?,0 WHERE '+proof).bind(userId,email,name,now,invite.token_hash,claim),
+    db.prepare('INSERT INTO auth_credentials (user_id,email,password_hash,recovery_hash) SELECT ?,?,?,? WHERE '+proof).bind(userId,email,encoded,legacyHash,invite.token_hash,claim),
+  ];
+  const results=await db.batch([
+    consume,...accountStatements,
+    db.prepare('INSERT INTO administrators (user_id,created_at) SELECT ?,? WHERE '+proof+' ON CONFLICT(user_id) DO NOTHING').bind(userId,now,invite.token_hash,claim),
+    db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND '+proof).bind(userId,invite.token_hash,claim),
+    db.prepare('DELETE FROM auth_password_resets WHERE user_id=? AND '+proof).bind(userId,invite.token_hash,claim),
+    db.prepare('UPDATE admin_invitations SET used_by=? WHERE token_hash=? AND claim_hash=?').bind(userId,invite.token_hash,claim),
+    db.prepare('INSERT INTO auth_sessions (token_hash,user_id,expires_at,created_at) SELECT ?,?,?,? WHERE '+proof).bind(digest(token),userId,now+AGE,now,invite.token_hash,claim),
+  ]);
+  if(!results[0].meta.changes)throw new AppError(409,'setup_unavailable','This setup link was already used, expired, or the account changed. Reopen the link to check its status.');
+  return {user:{userId,email,displayName:name,fullName:name,authSource:'password' as const},setCookie:sessionCookie(request,token)};
+}
 async function activateInvitation(userId:string,email:string,token:unknown){
   const invite=await invitationFor(token,email),now=Date.now(),db=database();
   const results=await db.batch([db.prepare('UPDATE admin_invitations SET used_at=?,used_by=? WHERE token_hash=? AND used_at IS NULL AND expires_at>?').bind(now,userId,invite.token_hash,now),db.prepare('INSERT INTO administrators (user_id,created_at) SELECT ?,? WHERE EXISTS (SELECT 1 FROM admin_invitations WHERE token_hash=? AND used_by=? AND used_at=?) ON CONFLICT(user_id) DO NOTHING').bind(userId,now,invite.token_hash,userId,now),db.prepare('DELETE FROM auth_sessions WHERE user_id=? AND EXISTS (SELECT 1 FROM admin_invitations WHERE token_hash=? AND used_by=? AND used_at=?)').bind(userId,invite.token_hash,userId,now)]);

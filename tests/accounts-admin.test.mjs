@@ -220,3 +220,50 @@ test('Reset pages use a private fragment link and never render a saved-code inpu
  for(const path of ['/login','/register','/forgot-password','/admin/register']){const html=await (await h.route(req(path))).text();assert.doesNotMatch(html,/name="recoveryCode"|data-recovery-result|Save your recovery code/);}
  configureEmail(h);const html=await (await h.route(req('/forgot-password'))).text();assert.match(html,/data-email-ready="true"/);assert.doesNotMatch(html,/<button[^>]*data-auth-submit disabled/);
 });
+
+async function setupInvite(h){const code='7'.repeat(40);h.env.ADMIN_INVITE_EMAIL=fixture.email;h.env.ADMIN_INVITE_HASH=h.auth.digest(code);const response=await h.route(req('/api/admin/invitations/create',{code,purpose:'admin_setup'}));assert.equal(response.status,200,await response.clone().text());return {code,...await response.json()};}
+const setupPayload=(invitation,extra={})=>({...fixture,password:'chosen private admin password phrase 587',confirmPassword:'chosen private admin password phrase 587',token:invitation.token,...extra});
+test('A setup link creates a custom admin account once without a separate registration or email recovery',async()=>{
+ const h=harness(),invitation=await setupInvite(h);assert.equal(invitation.purpose,'admin_setup');assert.ok(Math.abs(invitation.expiresAt-Date.now()-24*3600000)<3000);
+ for(let i=0;i<2;i++){const response=await h.route(req('/api/admin/setup/inspect',{token:invitation.token}));assert.equal(response.status,200);assert.equal((await response.json()).email,fixture.email);}
+ assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ const payload=setupPayload(invitation,{name:'My Custom Admin'}),response=await h.route(req('/api/admin/setup',payload));assert.equal(response.status,200,await response.clone().text());assert.deepEqual(await response.json(),{configured:true});
+ const cookie=response.headers.get('set-cookie').split(';')[0],session=await (await h.route(req('/api/session',undefined,cookie))).json();assert.equal(session.admin,true);assert.equal(session.user.name,'My Custom Admin');assert.equal(session.user.email,fixture.email);assert.equal((await h.store.all('SELECT * FROM accounts')).length,1);
+ const used=await h.store.first('SELECT * FROM admin_invitations');assert.ok(used.used_at);assert.ok(used.claim_hash);assert.equal(used.used_by,session.user.id);
+ assert.equal((await h.route(req('/api/admin/setup',payload))).status,410);await h.store.run('DELETE FROM administrators');assert.equal((await h.route(req('/api/admin/setup',payload))).status,410);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+});
+test('Setup can replace an existing account password without email delivery, preserves its identity and data, and revokes old sessions',async()=>{
+ const h=harness(),{cookie}=await signup(h),original=await h.auth.currentUser(req('/',undefined,cookie)),invitation=await setupInvite(h);await h.store.run('UPDATE accounts SET trial_ends=123456 WHERE id=?',original.userId);
+ await h.store.run('INSERT INTO auth_password_resets (user_id,token_hash,credential_hash,expires_at,created_at,ready) SELECT user_id,?,password_hash,?,?,1 FROM auth_credentials WHERE user_id=?','f'.repeat(64),Date.now()+600000,Date.now(),original.userId);
+ const payload=setupPayload(invitation,{name:'Personal Admin'}),response=await h.route(req('/api/admin/setup',payload));assert.equal(response.status,200,await response.clone().text());assert.equal((await h.store.all('SELECT * FROM accounts')).length,1);assert.equal((await h.store.first('SELECT trial_ends FROM accounts WHERE id=?',original.userId)).trial_ends,123456);
+ assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user,null);assert.equal((await h.store.all('SELECT * FROM auth_password_resets')).length,0);
+ assert.equal((await h.route(req('/api/auth/login',fixture))).status,401);assert.equal((await h.route(req('/api/auth/login',{email:fixture.email,password:payload.password}))).status,200);
+ const current=response.headers.get('set-cookie').split(';')[0],session=await (await h.route(req('/api/session',undefined,current))).json();assert.equal(session.user.id,original.userId);assert.equal(session.admin,true);assert.equal(h.mailRequests.length,0);
+});
+test('Registration invitations cannot reset passwords, and setup invitations cannot be consumed by legacy auth routes',async()=>{
+ const h=harness();await signup(h);const legacy=await issue(h),before=await h.store.first('SELECT password_hash FROM auth_credentials');assert.equal((await h.route(req('/api/admin/setup',setupPayload(legacy)))).status,403);assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);
+ const other=harness(),setup=await setupInvite(other);assert.equal((await other.route(req('/api/auth/register',{...fixture,adminInvitation:setup.token}))).status,403);assert.equal((await other.route(req('/api/admin/invitations/inspect',{token:setup.token}))).status,403);assert.equal((await other.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+ await signup(other);assert.equal((await other.route(req('/api/auth/login',{...fixture,adminInvitation:setup.token}))).status,403);assert.equal((await other.store.all('SELECT * FROM administrators')).length,0);
+});
+test('Setup rejects wrong email, invalid proof, expiry and password mismatch without consuming the link or touching the account',async()=>{
+ for(const kind of ['wrong-email','invalid-token','expired','confirmation']){
+  const h=harness();await signup(h);const invitation=await setupInvite(h),before=await h.store.first('SELECT password_hash FROM auth_credentials'),payload=setupPayload(invitation);
+  if(kind==='wrong-email')payload.email='someone-else@example.com';if(kind==='invalid-token')payload.token='0'.repeat(64);if(kind==='expired')await h.store.run('UPDATE admin_invitations SET expires_at=0');if(kind==='confirmation')payload.confirmPassword='different';
+  assert.equal((await h.route(req('/api/admin/setup',payload))).status,kind==='expired'?410:kind==='confirmation'?400:403,kind);
+  assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ }
+});
+test('A rotated owner secret revokes earlier setup links; same-origin protection and attempt limits apply',async()=>{
+ const h=harness(),invitation=await setupInvite(h),payload=setupPayload(invitation);h.env.ADMIN_INVITE_HASH=h.auth.digest('8'.repeat(40));assert.equal((await h.route(req('/api/admin/setup/inspect',{token:invitation.token}))).status,403);h.env.ADMIN_INVITE_HASH=h.auth.digest(invitation.code);
+ const cross=new Request('https://example.com/api/admin/setup',{method:'POST',headers:{Origin:'https://evil.example'},body:JSON.stringify(payload)});assert.equal((await h.route(cross)).status,403);
+ for(let i=0;i<5;i++)assert.equal((await h.route(req('/api/admin/setup',{...payload,confirmPassword:'bad'}))).status,400);assert.equal((await h.route(req('/api/admin/setup',payload))).status,429);assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);
+});
+test('Setup pages keep invitation secrets and emails out of initial HTML and use private response headers',async()=>{
+ const h=harness(),invitation=await setupInvite(h),page=await h.route(req('/admin/setup'));assert.equal(page.status,200);assert.equal(page.headers.get('Referrer-Policy'),'no-referrer');assert.equal(page.headers.get('X-Robots-Tag'),'noindex, nofollow');const html=await page.text();assert.match(html,/data-admin-setup-root/);assert.match(html,/id="adminSetupForm"[^>]*hidden/);assert.doesNotMatch(html,/name="recoveryCode"/);assert.ok(!html.includes(invitation.token));assert.ok(!html.includes(fixture.email));
+});
+test('A failed setup transaction rolls back credentials, membership, sessions and invitation consumption together',async()=>{
+ const h=harness(),{cookie}=await signup(h),invitation=await setupInvite(h),before=await h.store.first('SELECT password_hash FROM auth_credentials');
+ h.sql.exec("CREATE TRIGGER fail_setup_role BEFORE INSERT ON administrators BEGIN SELECT RAISE(ABORT,'fixture setup rollback'); END;");
+ assert.equal((await h.route(req('/api/admin/setup',setupPayload(invitation,{name:'Changed Name'})))).status,500);
+ assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);assert.equal((await h.store.first('SELECT claim_hash FROM admin_invitations')).claim_hash,null);assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.store.first('SELECT name FROM accounts')).name,fixture.name);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user.email,fixture.email);
+});

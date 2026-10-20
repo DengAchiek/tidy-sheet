@@ -1,9 +1,9 @@
-import {currentUser,isAdmin,requireAdmin,claimAdmin,issueAdminInvitation,inspectAdminInvitation,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
+import {currentUser,isAdmin,requireAdmin,claimAdmin,issueAdminInvitation,inspectAdminInvitation,inspectAdminSetup,completeAdminSetup,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
 import {telemetry,authEvent,dashboard} from './analytics';
 import {accountFor,subscriptionFor,first,all,run} from './store';
 import {AppError,sameOrigin,subscriptionAccess,publicSubscription,PLAN_CHOICES} from './policy.mjs';
 import {getPlans,displayPlan,billingMode,billingReady,initializeCheckout,portal,verifyCheckout,refreshSubscription,processWebhook} from './billing';
-import {landingPage,cleanerPage,privacyPage,signInPage,accountPage,choosePage,trainingPage,authPage,adminPage,adminAccessPage,adminRegistrationPage,securityPage,resetPasswordPage,esc} from './render';
+import {landingPage,cleanerPage,privacyPage,signInPage,accountPage,choosePage,trainingPage,authPage,adminPage,adminAccessPage,adminRegistrationPage,adminSetupPage,securityPage,resetPasswordPage,esc} from './render';
 const secureHeaders={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin','X-Frame-Options':'SAMEORIGIN'};
 const json=(value:any,status=200)=>Response.json(value,{status,headers:secureHeaders});
 const html=(body:string,status=200)=>new Response(body,{status,headers:{...secureHeaders,'Content-Type':'text/html; charset=utf-8'}});
@@ -29,6 +29,9 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='POST'&&path==='/api/auth/logout'){const user=await currentUser(request),response=json({signedOut:true,nativeSignOut:user?.authSource==='chatgpt'?'/signout-with-chatgpt?return_to=%2Fsheet-cleaner.html':null});response.headers.set('Set-Cookie',await logout(request));return response;}
     if(request.method==='POST'&&path==='/api/admin/invitations/create')return json(await issueAdminInvitation(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/invitations/inspect')return json(await inspectAdminInvitation(request,await readJSON(request)));
+    if(request.method==='POST'&&path==='/api/admin/setup/inspect')return json(await inspectAdminSetup(request,await readJSON(request)));
+    if(request.method==='POST'&&path==='/api/admin/setup'){const result=await completeAdminSetup(request,await readJSON(request)),response=json({configured:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
+    if(request.method==='GET'&&path==='/admin/setup'){const response=html(adminSetupPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
     if(request.method==='GET'&&path==='/admin/register'){const response=html(adminRegistrationPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
     if(request.method==='GET'&&['/login','/register'].includes(path))return html(authPage(path==='/register'?'register':'login',url.searchParams.get('returnTo')||'/sheet-cleaner.html'));
     if(request.method==='GET'&&path==='/account/security'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Faccount%2Fsecurity');return html(securityPage(user));}
