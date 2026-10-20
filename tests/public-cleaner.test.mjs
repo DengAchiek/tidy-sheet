@@ -25,7 +25,7 @@ function app(identity=null) {
   ]));
   const render = compile('../server/render.ts', { ...templates, 'cloudflare:workers': { env: {} }, './billing': billing, './recovery-email': { recoveryEmailReady: () => false } });
   return compile('../server/router.ts', {
-    './auth': { currentUser: async () => identity }, './analytics': {},
+    './reviews': {}, './auth': { currentUser: async () => identity }, './analytics': {},
     './store': { accountFor: unavailable, subscriptionFor: unavailable, first: unavailable, all: unavailable, run: unavailable },
     './policy.mjs': policy, './billing': billing, './render': render,
   }).handleRequest;

@@ -18,7 +18,8 @@ function harness(){
  const billing={billingMode:()=> 'live',getPlans:async()=>[null,null,null],billingReady:()=>false};
  const templates=Object.fromEntries(['landing','cleaner','privacy','training'].map(n=>['./templates/'+n+'.html?raw',fs.readFileSync(new URL('../server/templates/'+n+'.html',import.meta.url),'utf8')]));
  const render=compile('../server/render.ts',{...templates,'cloudflare:workers':{env},'./recovery-email':email,'./billing':billing});
- const router=compile('../server/router.ts',{'./auth':auth,'./analytics':analytics,'./store':store,'./policy.mjs':policy,'./billing':billing,'./render':render});
+ const reviews=compile('../server/reviews.ts',{'./store':store,'./auth':auth,'./policy.mjs':policy});
+ const router=compile('../server/router.ts',{'./reviews':reviews,'./auth':auth,'./analytics':analytics,'./store':store,'./policy.mjs':policy,'./billing':billing,'./render':render});
  return {sql,env,store,auth,analytics,render,mailRequests,drain:()=>Promise.all(pending.splice(0)),failEmail:()=>mailFailure=true,route:router.handleRequest,setNative:u=>native=u};
 }
 const fixture={name:'Sample User',email:'sample@example.com',password:'local test account phrase 9284'};
@@ -266,4 +267,51 @@ test('A failed setup transaction rolls back credentials, membership, sessions an
  h.sql.exec("CREATE TRIGGER fail_setup_role BEFORE INSERT ON administrators BEGIN SELECT RAISE(ABORT,'fixture setup rollback'); END;");
  assert.equal((await h.route(req('/api/admin/setup',setupPayload(invitation,{name:'Changed Name'})))).status,500);
  assert.equal((await h.store.first('SELECT used_at FROM admin_invitations')).used_at,null);assert.equal((await h.store.first('SELECT claim_hash FROM admin_invitations')).claim_hash,null);assert.equal((await h.store.first('SELECT password_hash FROM auth_credentials')).password_hash,before.password_hash);assert.equal((await h.store.first('SELECT name FROM accounts')).name,fixture.name);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);assert.equal((await (await h.route(req('/api/session',undefined,cookie))).json()).user.email,fixture.email);
+});
+
+const review=(extra={})=>({id:nodeCrypto.randomUUID(),rating:5,comment:'The spreadsheet cleaning was clear and useful for our team.',...extra});
+async function grantAdmin(h,cookie){const user=await h.auth.currentUser(req('/',undefined,cookie));await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',user.userId,Date.now());return user;}
+test('Signed-in clients can submit private reviews; retries save once and author identity cannot be spoofed',async()=>{
+ const h=harness(),payload=review();assert.equal((await h.route(req('/api/reviews',payload))).status,401);
+ const {cookie}=await signup(h);for(let i=0;i<2;i++)assert.equal((await h.route(req('/api/reviews',payload,cookie))).status,201);
+ assert.equal((await h.store.all('SELECT * FROM client_reviews')).length,1);const row=await h.store.first('SELECT * FROM client_reviews');assert.equal(row.rating,5);assert.equal(row.comment,payload.comment);assert.equal(row.status,'new');assert.equal(row.reviewed_at,null);
+ assert.equal((await h.route(req('/api/reviews',{...payload,comment:'A changed review with the same submission ID.'},cookie))).status,409);
+ assert.equal((await h.route(req('/api/reviews',review({email:'fake@example.com'}),cookie))).status,400);
+ assert.equal((await h.route(req('/api/reviews',review({userId:'another-user'}),cookie))).status,400);
+ const other=await signup(h,{email:'another-client@example.com'});assert.equal((await h.route(req('/api/reviews',payload,other.cookie))).status,409);assert.equal((await h.store.all('SELECT * FROM client_reviews')).length,1);
+});
+test('Reviews validate rating and text, reject cross-origin writes, and enforce a per-account cooldown',async()=>{
+ const h=harness(),{cookie}=await signup(h);
+ for(const extra of [{rating:0},{rating:6},{rating:'5'},{rating:2.5},{comment:'short'},{comment:'x'.repeat(2001)},{id:'not-a-uuid'},{comment:'invalid\u0000review text'}])assert.equal((await h.route(req('/api/reviews',review(extra),cookie))).status,400,JSON.stringify(extra));
+ const cross=new Request('https://example.com/api/reviews',{method:'POST',headers:{Origin:'https://evil.example',cookie},body:JSON.stringify(review())});assert.equal((await h.route(cross)).status,403);
+ const payload=review({comment:'  This review has valid trimmed content.  '});assert.equal((await h.route(req('/api/reviews',payload,cookie))).status,201);assert.equal((await h.store.first('SELECT comment FROM client_reviews')).comment,payload.comment.trim());assert.equal((await h.route(req('/api/reviews',review(),cookie))).status,429);
+});
+test('Review inbox pages and APIs remain private and recheck admin membership for reads and status changes',async()=>{
+ const h=harness(),{cookie}=await signup(h),payload=review();await h.route(req('/api/reviews',payload,cookie));
+ assert.equal((await h.route(req('/api/admin/reviews'))).status,401);assert.equal((await h.route(req('/api/admin/reviews',undefined,cookie))).status,403);assert.equal((await h.route(req('/admin/reviews',undefined,cookie))).status,403);assert.equal((await h.route(req('/admin/reviews'))).headers.get('Location'),'/login?returnTo=%2Fadmin%2Freviews');
+ await grantAdmin(h,cookie);const response=await h.route(req('/api/admin/reviews',undefined,cookie));assert.equal(response.status,200);assert.match(response.headers.get('Cache-Control'),/no-store/);const data=await response.json();assert.equal(data.items[0].email,fixture.email);assert.equal(data.items[0].name,fixture.name);assert.equal(data.summary.total,1);assert.equal(data.summary.newCount,1);assert.equal(data.summary.averageRating,5);
+ assert.equal((await h.route(req('/api/admin/reviews/status',{id:payload.id,status:'reviewed'},cookie))).status,200);assert.equal((await h.store.first('SELECT status FROM client_reviews')).status,'reviewed');assert.ok((await h.store.first('SELECT reviewed_at FROM client_reviews')).reviewed_at);
+ await h.store.run('DELETE FROM administrators');assert.equal((await h.route(req('/api/admin/reviews',undefined,cookie))).status,403);assert.equal((await h.route(req('/api/admin/reviews/status',{id:payload.id,status:'new'},cookie))).status,403);
+});
+test('Admin review filters and pagination have deterministic ordering without repeating rows',async()=>{
+ const h=harness(),{cookie}=await signup(h),user=await grantAdmin(h,cookie),now=Date.now();
+ for(let i=0;i<6;i++)await h.store.run('INSERT INTO client_reviews (id,user_id,rating,comment,status,created_at) VALUES (?,?,?,?,?,?)',nodeCrypto.randomUUID(),user.userId,i%5+1,'A distinct local test review '+i,i%2?'reviewed':'new',now);
+ const firstPage=await (await h.route(req('/api/admin/reviews?limit=2',undefined,cookie))).json();assert.equal(firstPage.items.length,2);assert.ok(firstPage.nextCursor);const ids=firstPage.items.map(r=>r.id);let cursor=firstPage.nextCursor;
+ while(cursor){const data=await (await h.route(req('/api/admin/reviews?limit=2&cursor='+encodeURIComponent(cursor),undefined,cookie))).json();ids.push(...data.items.map(r=>r.id));cursor=data.nextCursor;}
+ assert.equal(ids.length,6);assert.equal(new Set(ids).size,6);assert.deepEqual(ids,[...ids].sort().reverse());
+ const filtered=await (await h.route(req('/api/admin/reviews?status=new',undefined,cookie))).json();assert.equal(filtered.items.length,3);assert.ok(filtered.items.every(r=>r.status==='new'));assert.equal(filtered.summary.total,6);assert.equal(filtered.summary.newCount,3);
+ const id=filtered.items[0].id;assert.equal((await h.route(req('/api/admin/reviews/status',{id,status:'reviewed'},cookie))).status,200);assert.equal((await h.route(req('/api/admin/reviews/status',{id,status:'new'},cookie))).status,200);assert.equal((await h.store.first('SELECT reviewed_at FROM client_reviews WHERE id=?',id)).reviewed_at,null);
+ for(const query of ['status=published','limit=100','limit=0','cursor=not-json','cursor='+encodeURIComponent('x'.repeat(251))])assert.equal((await h.route(req('/api/admin/reviews?'+query,undefined,cookie))).status,400,query);
+ assert.equal((await h.route(req('/api/admin/reviews/status',{id,status:'public'},cookie))).status,400);assert.equal((await h.route(req('/api/admin/reviews/status',{id:nodeCrypto.randomUUID(),status:'reviewed'},cookie))).status,404);
+});
+test('Reviews support native site identities without merging accounts that share an email',async()=>{
+ const h=harness(),{cookie}=await signup(h);h.setNative({userId:'native-client-id',email:fixture.email,displayName:'Native Client',fullName:'Native Client'});
+ assert.equal((await h.route(req('/api/reviews',review()))).status,201);const row=await h.store.first('SELECT user_id FROM client_reviews');assert.equal(row.user_id,'native-client-id');assert.equal((await h.store.all('SELECT * FROM accounts')).length,2);assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ assert.equal((await h.route(req('/api/admin/reviews',undefined,cookie))).status,403);
+});
+test('Review pages are discoverable, preserve the sign-in destination and never reveal submitted reviews publicly',async()=>{
+ const h=harness(),{cookie}=await signup(h),privateComment='Private client review not for public display.';await h.route(req('/api/reviews',review({comment:privateComment}),cookie));
+ const publicPage=await (await h.route(req('/reviews'))).text();assert.match(publicPage,/Sign in to write a review/);assert.match(publicPage,/returnTo=%2Freviews/);assert.doesNotMatch(publicPage,new RegExp(privateComment));
+ const clientPage=await (await h.route(req('/reviews',undefined,cookie))).text();assert.match(clientPage,/id="clientReviewForm"/);assert.match(clientPage,/name="rating"/);assert.match(clientPage,/maxlength="2000"/);assert.doesNotMatch(clientPage,new RegExp(privateComment));assert.match(h.render.authPage('login','/reviews'),/data-auth-return="\/reviews"/);
+ assert.match(await (await h.route(req('/'))).text(),/href="\/reviews">Leave a review/);await grantAdmin(h,cookie);assert.match(await (await h.route(req('/admin',undefined,cookie))).text(),/href="\/admin\/reviews"/);
 });

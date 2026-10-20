@@ -69,3 +69,8 @@ export const siteEvents=sqliteTable('site_events',{
   outcome:text('outcome').notNull(),durationMs:integer('duration_ms'),rowCount:integer('row_count'),columnCount:integer('column_count'),
   createdAt:integer('created_at').notNull(),
 },t=>[index('site_events_time').on(t.createdAt),index('site_events_kind_time').on(t.kind,t.createdAt),index('site_events_visitor_time').on(t.visitorId,t.createdAt)]);
+export const clientReviews=sqliteTable('client_reviews',{
+  id:text('id').primaryKey(),userId:text('user_id').notNull().references(()=>accounts.id),
+  rating:integer('rating').notNull(),comment:text('comment').notNull(),
+  status:text('status').notNull().default('new'),createdAt:integer('created_at').notNull(),reviewedAt:integer('reviewed_at'),
+},t=>[index('reviews_created').on(t.createdAt,t.id),index('reviews_status_created').on(t.status,t.createdAt,t.id),index('reviews_user_created').on(t.userId,t.createdAt)]);

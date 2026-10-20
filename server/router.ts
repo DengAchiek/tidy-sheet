@@ -1,9 +1,10 @@
 import {currentUser,isAdmin,requireAdmin,claimAdmin,issueAdminInvitation,inspectAdminInvitation,inspectAdminSetup,completeAdminSetup,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
 import {telemetry,authEvent,dashboard} from './analytics';
+import {submitReview,reviewInbox,updateReview} from './reviews';
 import {accountFor,subscriptionFor,first,all,run} from './store';
 import {AppError,sameOrigin,subscriptionAccess,publicSubscription,PLAN_CHOICES} from './policy.mjs';
 import {getPlans,displayPlan,billingMode,billingReady,initializeCheckout,portal,verifyCheckout,refreshSubscription,processWebhook} from './billing';
-import {landingPage,cleanerPage,privacyPage,signInPage,accountPage,choosePage,trainingPage,authPage,adminPage,adminAccessPage,adminRegistrationPage,adminSetupPage,securityPage,resetPasswordPage,esc} from './render';
+import {landingPage,cleanerPage,privacyPage,signInPage,accountPage,choosePage,trainingPage,authPage,adminPage,adminReviewsPage,reviewsPage,adminAccessPage,adminRegistrationPage,adminSetupPage,securityPage,resetPasswordPage,esc} from './render';
 const secureHeaders={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin','X-Frame-Options':'SAMEORIGIN'};
 const json=(value:any,status=200)=>Response.json(value,{status,headers:secureHeaders});
 const html=(body:string,status=200)=>new Response(body,{status,headers:{...secureHeaders,'Content-Type':'text/html; charset=utf-8'}});
@@ -38,6 +39,11 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='GET'&&path==='/reset-password'){const response=html(resetPasswordPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
     if(request.method==='GET'&&path==='/forgot-password')return html(authPage('recover',url.searchParams.get('returnTo')||'/sheet-cleaner.html'));
     if(request.method==='GET'&&path==='/admin'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fadmin');if(!await isAdmin(user))return html(adminAccessPage(user),403);return html(adminPage(user));}
+    if(request.method==='GET'&&path==='/reviews')return html(reviewsPage(await currentUser(request)));
+    if(request.method==='POST'&&path==='/api/reviews'){const {user}=await userAccount(request);return json(await submitReview(request,user,await readJSON(request)),201);}
+    if(request.method==='GET'&&path==='/admin/reviews'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fadmin%2Freviews');if(!await isAdmin(user))return html(adminAccessPage(user),403);return html(adminReviewsPage(user));}
+    if(request.method==='GET'&&path==='/api/admin/reviews'){await requireAdmin(request);return json(await reviewInbox(url.searchParams));}
+    if(request.method==='POST'&&path==='/api/admin/reviews/status'){await requireAdmin(request);return json(await updateReview(await readJSON(request)));}
     if(request.method==='POST'&&path==='/api/admin/claim')return json(await claimAdmin(request,await readJSON(request)));
     if(request.method==='GET'&&path==='/api/admin/overview'){await requireAdmin(request);return json(await dashboard(Number(url.searchParams.get('days')||30)));}
     if(request.method==='POST'&&path==='/api/telemetry'){const result=await telemetry(request,await readJSON(request),await currentUser(request)),response=json({recorded:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
