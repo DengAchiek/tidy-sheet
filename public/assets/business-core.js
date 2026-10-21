@@ -38,13 +38,13 @@
     const maps=b.fields.map(f=>new Map(f.mapping.map(e=>[e.from.trim().toLowerCase(),e.to])));
     model.rows.forEach((row,ri)=>{
       if(onProgress&&ri%1024===0)onProgress(Math.round(ri/model.rows.length*20),'Applying business policies');
-      if(config.removeEmpty&&row.every(v=>!String(v).trim()||(config.nulls&&missing(v)&&(config.trim!==false||String(v).trim()===String(v))))){empty.push({row:model.sourceRows[ri],column:'Entire row',original:JSON.stringify(row),cleaned:'',issue:'Entire row empty before applying fill policies',action:'Removed empty',severity:'info'});return;}
+      if(config.removeEmpty&&row.every(v=>!String(v).trim()||(config.nulls&&missing(v)))){empty.push({row:model.sourceRows[ri],column:'Entire row',original:JSON.stringify(row),cleaned:'',issue:'Entire row empty before applying fill policies',action:'Removed empty',severity:'info'});return;}
       if(b.fields.some((f,i)=>f.missing==='drop'&&missing(row[i]))){removed.push({row:model.sourceRows[ri],column:'Entire row',original:JSON.stringify(row),cleaned:'',issue:'Missing value in a column with the explicit remove-row policy',action:'Removed by missing policy',severity:'info'});return;}
       let next=row;
       b.fields.forEach((f,i)=>{const value=missing(row[i])&&f.missing==='fill'?String(f.fill):maps[i].get(String(row[i]).trim().toLowerCase());if(value!==undefined&&value!==row[i]){if(next===row)next=row.slice();next[i]=value;changes.push({row:model.sourceRows[ri],column:model.headers[i],original:row[i],cleaned:value,issue:missing(row[i])?'Filled with the chosen replacement':'Applied category mapping',action:'Changed by business policy',severity:'info'});}});
       rows.push(next);sources.push(model.sourceRows[ri]);
     });
-    const result=C.clean({...model,rows,sourceRows:sources},config,p=>onProgress?.(20+Math.round(p*.55),'Standardizing values'));
+    const result=C.clean({...model,rows,sourceRows:sources},{...config,removeEmptyColumns:false},p=>onProgress?.(20+Math.round(p*.55),'Standardizing values'));
     result.stats.input=model.rows.length;result.stats.businessDropped=removed.length;result.stats.empty+=empty.length;const coreChanges=new Set(result.audit.filter(e=>e.action==='Changed').map(e=>JSON.stringify([e.row,e.column])));result.stats.changed+=changes.filter(e=>!coreChanges.has(JSON.stringify([e.row,e.column]))).length;result.audit.unshift(...empty,...removed,...changes);
     const changedBySource=new Map();for(const change of changes){if(!changedBySource.has(change.row))changedBySource.set(change.row,new Set());changedBySource.get(change.row).add(model.headers.indexOf(change.column));}
     const businessIssues=[];let consistencyChecked=0,consistencyFailed=0;
@@ -72,6 +72,12 @@
     });
     result.issues.push(...businessIssues);result.audit.push(...businessIssues);result.stats.review=result.flags.filter(row=>row.some(Boolean)).length;
     const required=b.fields.map((f,i)=>f.missing==='review'?i:-1).filter(i=>i>=0),requiredMissing=result.rows.reduce((n,row)=>n+required.filter(i=>missing(row[i])).length,0);
+    const protectedColumns=new Set(b.fields.flatMap((field,i)=>field.missing!=='optional'||field.key||field.min!==''||field.max!==''||field.allowed.length||field.mapping.length?[i]:[]));
+    for(const rule of b.crossRules)for(const i of rule.kind==='dateOrder'?[rule.start,rule.end]:[rule.qty,rule.price,rule.total])protectedColumns.add(i);
+    if(b.fuzzy.enabled){protectedColumns.add(b.fuzzy.column);protectedColumns.add(b.fuzzy.scope);}
+    if(b.insights.enabled)for(const key of ['id','date','amount','category','currencyColumn'])protectedColumns.add(b.insights[key]);
+    C.finalizeOutput(model.headers,result,config,[...protectedColumns]);
+    result.stats.filled=changes.filter(change=>change.issue==='Filled with the chosen replacement').length;
     result.quality={requiredCells:required.length*result.rows.length,requiredMissing,missing:result.nullAnalysis.missing,cells:result.nullAnalysis.cellCount,flaggedCells:result.flags.reduce((n,r)=>n+r.filter(Boolean).length,0),consistencyChecked,consistencyFailed,errors:result.issues.filter(i=>i.action!=='Removed duplicate'&&!/Dropped|Removed/.test(i.action)&&i.severity!=='warning').length,warnings:businessIssues.filter(i=>i.severity==='warning').length,accuracy:'Not verified against authoritative records',timeliness:'Use the mapped date range; freshness requirements depend on your business.'};
     onProgress?.(80,'Reviewing possible duplicates');result.duplicates=findSimilar(model.headers,result,b.fuzzy);onProgress?.(95,'Building business summaries');result.insights=insights(model,result,b.insights,config.dateOrder);return result;
   }

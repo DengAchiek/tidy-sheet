@@ -1,5 +1,5 @@
 'use strict';
-importScripts('core.js?v=3.0.0','business-core.js?v=3.0.0');
+importScripts('core.js?v=4.8.0','business-core.js?v=4.8.0');
 let workbook=null,sessionMatrix=null,baseModel=null,workingModel=null,sessionResult=null,sessionBefore=null,sessionEdits=[],mergeDecisions=[],lastConfig=null,pageCache=null,selectedHeader=true;
 const clock=()=>typeof performance!=='undefined'?performance.now():Date.now();
 function rebuild(){
@@ -11,7 +11,7 @@ function rebuild(){
 }
 function selectModel(matrix,hasHeader=true){const candidate=TidyCore.prepare(matrix,hasHeader),before=TidyCore.analyzeNulls(candidate);sessionMatrix=matrix;selectedHeader=hasHeader;baseModel=candidate;sessionBefore=before;sessionEdits=[];mergeDecisions=[];rebuild();return metadata();}
 function metadata(){return {headers:baseModel.headers,hasHeader:selectedHeader,rowCount:baseModel.rows.length,warnings:baseModel.warnings,nullAnalysis:sessionBefore,examples:baseModel.headers.map((_,i)=>String(baseModel.rows[0]?.[i]||'').slice(0,160))};}
-function summary(){const r=sessionResult;return {stats:r.stats,nullAnalysis:r.nullAnalysis,quality:r.quality,insights:r.insights,duplicates:{...r.duplicates,pairs:r.duplicates.pairs.map(p=>({...p,left:p.left.map(v=>v.slice(0,300)),right:p.right.map(v=>v.slice(0,300))}))},issueCount:r.issues.length,mergeCount:mergeDecisions.length};}
+function summary(){const r=sessionResult;return {stats:r.stats,outputHeaders:r.outputHeaders,outputColumnIndices:r.outputColumnIndices,removedColumns:r.removedColumns,nullAnalysis:r.nullAnalysis,quality:r.quality,insights:r.insights,duplicates:{...r.duplicates,pairs:r.duplicates.pairs.map(p=>({...p,left:p.left.map(v=>v.slice(0,300)),right:p.right.map(v=>v.slice(0,300))}))},issueCount:r.issues.length,mergeCount:mergeDecisions.length};}
 async function streamCSV(file,delimiter,id){
   const reader=file.stream().getReader(),decoder=new TextDecoder('utf-8',{fatal:true});let record='',quoted=false,skipLF=false,read=0,cells=0,nonempty=false;const matrix=[];
   function finish(){const parsed=record.trim()?TidyCore.parseCSV(record,delimiter):{matrix:[delimiter?record.split(delimiter):[record]]};if(!delimiter)delimiter=parsed.delimiter;const row=parsed.matrix[0];if(row.length>TidyCore.LIMITS.columns)throw Error('This file has more than 100 columns. Split it into smaller files.');cells+=row.length;if(cells>TidyCore.LIMITS.cells+TidyCore.LIMITS.columns||matrix.length>TidyCore.LIMITS.rows)throw Error('This file exceeds the row or cell limit. Split it into smaller files.');matrix.push(row);record='';}
@@ -20,13 +20,14 @@ async function streamCSV(file,delimiter,id){
 }
 function sessionPage(data){
   if(!baseModel)throw Error('Import a file first.');const view=data.view||'original',r=sessionResult;if(view!=='original'&&!r)throw Error('Clean again to refresh the results.');
+  const columns=view==='cleaned'?r.outputColumnIndices:baseModel.headers.map((_,i)=>i);
   const query=String(data.query||'').trim().toLowerCase(),filter=data.filter||'all',key=JSON.stringify([view,query,filter]);let indices;
   if(pageCache?.key===key)indices=pageCache.indices;else{
     const rows=view==='issues'?r.issues:view==='original'?baseModel.rows:r.rows;indices=[];
-    for(let i=0;i<rows.length;i++){const row=rows[i];if(query&&!(view==='issues'?Object.values(row):row).some(v=>String(v).toLowerCase().includes(query)))continue;if(filter==='missing'&&view!=='issues'&&!row.some(TidyBusiness.missing))continue;if(view==='cleaned'&&filter==='invalid'&&!r.flags[i].some(Boolean))continue;if(view==='cleaned'&&filter==='changed'&&!r.changed[i].some(Boolean))continue;if(view==='issues'&&filter==='warnings'&&row.severity!=='warning')continue;if(view==='issues'&&filter==='errors'&&(row.severity==='warning'||row.severity==='info'||/Removed|Dropped/.test(row.action)))continue;if(view==='issues'&&filter==='invalid'&&/Removed|Dropped/.test(row.action))continue;indices.push(i);}pageCache={key,indices};
+    for(let i=0;i<rows.length;i++){const row=rows[i];if(query&&!(view==='issues'?Object.values(row):row).some(v=>String(v).toLowerCase().includes(query)))continue;if(filter==='missing'&&view!=='issues'&&!columns.some(ci=>TidyBusiness.missing(row[ci])))continue;if(view==='cleaned'&&filter==='invalid'&&!r.flags[i].some(Boolean))continue;if(view==='cleaned'&&filter==='changed'&&!r.changed[i].some(Boolean))continue;if(view==='issues'&&filter==='warnings'&&row.severity!=='warning')continue;if(view==='issues'&&filter==='errors'&&(row.severity==='warning'||row.severity==='info'||/Removed|Dropped/.test(row.action)))continue;if(view==='issues'&&filter==='invalid'&&/Removed|Dropped/.test(row.action))continue;indices.push(i);}pageCache={key,indices};
   }
   const pages=Math.max(1,Math.ceil(indices.length/50)),page=Math.max(0,Math.min(Number(data.page)||0,pages-1));
-  return {count:indices.length,pages,page,items:indices.slice(page*50,(page+1)*50).map(i=>view==='issues'?{index:i,...r.issues[i],original:String(r.issues[i].original).slice(0,500)}:{source:(view==='original'?baseModel.sourceRows:r.sourceRows)[i],values:(view==='original'?baseModel.rows:r.rows)[i].map(v=>v.slice(0,500)),flags:view==='cleaned'?r.flags[i]:[],changed:view==='cleaned'?r.changed[i]:[]})};
+  return {headers:columns.map(i=>baseModel.headers[i]),count:indices.length,pages,page,items:indices.slice(page*50,(page+1)*50).map(i=>view==='issues'?{index:i,...r.issues[i],original:String(r.issues[i].original).slice(0,500)}:{source:(view==='original'?baseModel.sourceRows:r.sourceRows)[i],values:columns.map(ci=>(view==='original'?baseModel.rows:r.rows)[i][ci].slice(0,500)),flags:view==='cleaned'?columns.map(ci=>r.flags[i][ci]):[],changed:view==='cleaned'?columns.map(ci=>r.changed[i][ci]):[]})};
 }
 function excel(){if(!self.XLSX)importScripts('vendor/xlsx.full.min.js');return self.XLSX;}
 function sheetMatrix(name){
@@ -86,12 +87,13 @@ self.onmessage=async({data})=>{
       else if(data.kind==='quality')rows=TidyBusiness.qualityRows(r);
       else if(data.kind==='log')rows=[['Source row','Column','Original value','Cleaned value','Detail','Action','Severity'],...r.audit.map(i=>[i.row,i.column,i.original,i.cleaned,i.issue,i.action,i.severity||''])];
       else if(data.kind==='insights'){if(!r.insights.enabled)throw Error('Confirm business summary mappings first.');rows=[['Currency','Month',r.insights.unit,'Rows'],...r.insights.monthly.map(g=>[g.currency,g.month,g.total,g.rows])];}
-      else rows=[baseModel.headers,...r.rows];
+      else rows=[r.outputHeaders,...r.rows.map(row=>r.outputColumnIndices.map(i=>row[i]))];
       const buffers=[],encoder=new TextEncoder();for(let offset=0;offset<rows.length;offset+=512){const text=(offset?'\r\n':'')+TidyCore.toCSV(rows.slice(offset,offset+512)).slice(offset?1:0);buffers.push(encoder.encode(text).buffer);postMessage({id,progress:Math.round(Math.min(rows.length,offset+512)/rows.length*100),label:'Preparing CSV export'});}postMessage({id,result:{buffers}},buffers);return;
     }
     else if(action==='clean')result=TidyCore.clean(data.model,data.config,progress=>postMessage({id,progress}));
     else if(action==='xlsx'){
-      if(data.session){if(!sessionResult)throw Error('Clean before exporting.');data={...data,headers:baseModel.headers,result:sessionResult,types:lastConfig.types,nullBefore:sessionBefore};}
+      if(data.session){if(!sessionResult)throw Error('Clean before exporting.');data={...data,headers:sessionResult.outputHeaders,result:{...sessionResult,rows:sessionResult.rows.map(row=>sessionResult.outputColumnIndices.map(i=>row[i]))},types:sessionResult.outputColumnIndices.map(i=>lastConfig.types[i]),nullBefore:sessionBefore};}
+      if(!data.session&&data.result.outputColumnIndices){const indices=data.result.outputColumnIndices;data={...data,headers:indices.map(i=>data.headers[i]),types:indices.map(i=>data.types[i]),result:{...data.result,rows:data.result.rows.map(row=>indices.map(i=>row[i]))}};}
       const X=excel(),wb=X.utils.book_new();
       const rows=data.result.rows.map(row=>row.map((v,i)=>data.types[i]==='number'&&v!==''&&/^-?\d+(?:\.\d+)?$/.test(v)&&v.replace(/[^\d]/g,'').length<=15?Number(v):String(v)));
       const ws=X.utils.aoa_to_sheet([data.headers,...rows],{dense:true});

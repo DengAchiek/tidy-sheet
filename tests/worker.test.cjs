@@ -58,5 +58,5 @@ test('Actual worker exports a null-analysis worksheet with original and cleaned 
   const buffer=await request('xlsx',{headers:model.headers,result,types,nullBefore:C.analyzeNulls(model)}),wb=X.read(buffer,{type:'array'});
   assert.deepEqual(wb.SheetNames,['Cleaned','Issues','Summary','Null analysis']);
   const report=X.utils.sheet_to_json(wb.Sheets['Null analysis'],{header:1});
-  assert.deepEqual(report[2],['Amount',4,1,2,3,75,2,1,0,1,50]);
+  assert.deepEqual(report[2],['Amount',4,1,2,3,75,2,1,0,1,50,'Kept']);
 });

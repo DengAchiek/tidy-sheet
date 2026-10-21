@@ -41,3 +41,18 @@ test('Invoice and range checks preserve precision above the safe JavaScript inte
 });
 test('Sales template recognizes compatible cross-field checks and category chains are rejected',()=>{const b=B.defaults(['Order Date','Delivery Date','Qty','Unit Price','Amount'],'sales');assert.equal(b.crossRules.length,2);const c=setup([['Category'],['a']]);c.config.business.fields[0].mapping=[{from:'a',to:'b'},{from:'b',to:'c'}];assert.throws(()=>B.clean(c.model,c.config),/chained mappings/);});
 test('Explicit fill values do not resurrect entirely empty rows when remove-empty is selected',()=>{const {model,config}=setup([['ID','Amount'],['',''],['a','N/A']]);config.business.fields[1].missing='fill';config.business.fields[1].fill='0';const r=B.clean(model,config);assert.equal(r.rows.length,1);assert.equal(r.rows[0][0],'a');assert.equal(r.stats.empty,1);assert.equal(r.rows[0][1],'0');});
+test('Blank and null-only columns are removed from output without losing zero, false, or source alignment',()=>{
+ const {model,config}=setup([['ID','Empty','Amount','Marker','Active'],['a','','0',' NULL ','false'],['b','  ','12','N/A','true'],['','','','','']]);config.removeEmptyColumns=true;
+ const r=B.clean(model,config);assert.equal(r.stats.empty,1);assert.equal(r.stats.emptyColumns,2);assert.equal(r.stats.nulls,2);assert.deepEqual(r.outputHeaders,['ID','Amount','Active']);assert.deepEqual(r.outputColumnIndices,[0,2,4]);assert.deepEqual(r.rows.map(row=>r.outputColumnIndices.map(i=>row[i])),[['a','0','false'],['b','12','true']]);assert.equal(r.nullAnalysis.cellCount,6);assert.equal(r.nullAnalysis.missing,0);assert.deepEqual(model.headers,['ID','Empty','Amount','Marker','Active']);assert.equal(model.rows[0][3],' NULL ');assert.equal(r.audit.filter(e=>e.action==='Removed empty column').length,2);
+});
+test('Required business fields and explicitly filled columns are retained, and column removal can be disabled',()=>{
+ const {model,config}=setup([['ID','Required','Fill','Optional'],['a','','N/A',''],['b','','null','']]);config.removeEmptyColumns=true;config.business.fields[1].missing='review';config.business.fields[2].missing='fill';config.business.fields[2].fill='Unknown';
+ const r=B.clean(model,config);assert.deepEqual(r.outputHeaders,['ID','Required','Fill']);assert.equal(r.stats.filled,2);assert.equal(r.quality.requiredMissing,2);assert.equal(r.stats.review,2);assert.equal(r.nullAnalysis.cellCount,6);
+ const keep=B.clean(model,{...config,removeEmptyColumns:false});assert.equal(keep.stats.emptyColumns,0);assert.equal(keep.outputHeaders.length,4);
+});
+test('Null normalization is independent of whitespace trimming and all-empty output retains its schema',()=>{
+ const {model,config}=setup([['ID','Value'],['a',' NULL '],[' N/A ',' null ']]);config.trim=false;config.removeEmptyColumns=true;const r=B.clean(model,config);assert.equal(r.stats.empty,1);assert.deepEqual(r.outputHeaders,['ID']);assert.equal(r.stats.nulls,1);
+ const empty=setup([['ID','Value'],['',''],['N/A','null']]);empty.config.removeEmptyColumns=true;const out=B.clean(empty.model,empty.config);assert.equal(out.stats.output,0);assert.deepEqual(out.outputHeaders,['ID','Value']);assert.equal(out.nullAnalysis.cellCount,0);assert.ok(Number.isFinite(out.nullAnalysis.percentage));
+ const literal=B.clean(model,{...config,nulls:false});assert.equal(literal.outputHeaders.length,2);assert.equal(literal.stats.nulls,0);
+});
+test('Keeping empty rows cannot produce a zero-column workbook',()=>{const {model,config}=setup([['ID','Note'],['',''],['','']]);const r=B.clean(model,{...config,removeEmpty:false,removeEmptyColumns:true});assert.equal(r.stats.output,2);assert.deepEqual(r.outputHeaders,['ID','Note']);assert.equal(r.nullAnalysis.missing,4);});

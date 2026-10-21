@@ -9,13 +9,13 @@
   const TYPES = { text: 'Text / ID', name: 'Person name', email: 'Email', phone: 'Kenyan mobile', date: 'Date', number: 'Number / amount' };
   const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
   const NULL_MARKER = /^(?:n\/a|na|null|none|nil|-+|undefined)$/i;
-  function analyzeNulls({headers,rows}) {
+  function analyzeNulls({headers,rows,columnIndices}) {
     const columns=headers.map(name=>({name,blank:0,markers:0,missing:0,percentage:0}));
     let rowsWithMissing=0;
     for(const row of rows){
       let hasMissing=false;
       for(let i=0;i<headers.length;i++){
-        const value=String(row[i]??'').trim(),column=columns[i];
+        const value=String(row[columnIndices?.[i]??i]??'').trim(),column=columns[i];
         if(!value){column.blank++;hasMissing=true;}
         else if(NULL_MARKER.test(value)){column.markers++;hasMissing=true;}
       }
@@ -31,13 +31,33 @@
     return {rowCount:rows.length,cellCount,blank,markers,missing,percentage:cellCount?missing/cellCount*100:0,rowsWithMissing,completeRows:rows.length-rowsWithMissing,columns};
   }
   function nullReportRows(before,after) {
+    const byName=new Map((after?.columns||[]).map(column=>[column.name,column])),removed=new Set(after?.removedColumns||[]);
     return [
-      ['Column','Rows before','Blank before','Null markers before','Missing before','Missing % before','Rows after','Blank after','Null markers after','Missing after','Missing % after'],
-      ...before.columns.map((column,i)=>{
-        const cleaned=after?.columns[i];
-        return [column.name,before.rowCount,column.blank,column.markers,column.missing,column.percentage,...(cleaned?[after.rowCount,cleaned.blank,cleaned.markers,cleaned.missing,cleaned.percentage]:['','','','',''])];
+      ['Column','Rows before','Blank before','Null markers before','Missing before','Missing % before','Rows after','Blank after','Null markers after','Missing after','Missing % after','Column status'],
+      ...before.columns.map(column=>{
+        const cleaned=byName.get(column.name);
+        return [column.name,before.rowCount,column.blank,column.markers,column.missing,column.percentage,...(cleaned?[after.rowCount,cleaned.blank,cleaned.markers,cleaned.missing,cleaned.percentage,'Kept']:['','','','','',removed.has(column.name)?'Removed empty column':'Not cleaned yet'])];
       })
     ];
+  }
+  // Preserve full-width source values for corrections and reviewed merges. Only
+  // the output view is projected; consumers use outputColumnIndices to export.
+  function finalizeOutput(headers,result,config={},protectedColumns=[]) {
+    const protectedSet=new Set(protectedColumns),removed=[];
+    const keep=headers.flatMap((name,i)=>{
+      const empty=config.removeEmptyColumns===true&&result.rows.length>0&&!protectedSet.has(i)&&result.rows.every(row=>!String(row[i]??'').trim());
+      if(empty){removed.push({index:i,name});return [];}
+      return [i];
+    });
+    // Keep a usable schema if no columns contain values and the user has
+    // explicitly kept empty rows. Empty output also retains its source headers.
+    if(!keep.length){keep.push(...headers.map((_,i)=>i));removed.length=0;}
+    result.outputColumnIndices=keep;result.outputHeaders=keep.map(i=>headers[i]);result.removedColumns=removed;
+    result.stats.emptyColumns=removed.length;result.stats.outputColumns=keep.length;
+    result.nullAnalysis=analyzeNulls({headers:result.outputHeaders,rows:result.rows,columnIndices:keep});
+    result.nullAnalysis.removedColumns=removed.map(column=>column.name);
+    result.audit.push(...removed.map(column=>({row:'',column:column.name,original:'',cleaned:'',issue:'All retained values are empty after cleaning.',action:'Removed empty column',severity:'info'})));
+    return result;
   }
   function guess(header) {
     const h = header.toLowerCase().replace(/[_-]/g, ' ');
@@ -133,13 +153,13 @@
     const {headers,rows,sourceRows}=model;
     const types=config.types||headers.map(guess), keys=config.keys?.length?config.keys:headers.map((_,i)=>i);
     const output=[],flags=[],changed=[],origins=[],issues=[],audit=[],seen=new Map();
-    const stats={input:rows.length,output:0,changed:0,duplicates:0,empty:0,invalid:0,dropped:0,review:0};
+    const stats={input:rows.length,output:0,changed:0,duplicates:0,empty:0,invalid:0,dropped:0,review:0,nulls:0};
     for(let ri=0;ri<rows.length;ri++){
       if(onProgress&&ri%1024===0)onProgress(Math.round(ri/Math.max(1,rows.length)*100));
       const row=rows[ri],source=sourceRows[ri],values=[],rowFlags=[],rowChanged=[],rowIssues=[],rowAudit=[];
       for(let ci=0;ci<headers.length;ci++){
         const raw=row[ci];let s=config.trim===false?raw:raw.replace(/\s+/gu,' ').trim();
-        if(config.nulls&&NULL_MARKER.test(s))s='';
+        const wasNull=config.nulls&&NULL_MARKER.test(s.trim());if(wasNull){s='';stats.nulls++;}
         let result={value:s};
         if(s){switch(types[ci]){
           case 'name':if(config.titleCase)result.value=s.toLowerCase().replace(/(^|[\s\-'’])(\p{L})/gu,(m,a,b)=>a+b.toUpperCase());break;
@@ -151,7 +171,7 @@
         // Keep invalid input intact so review never loses source data.
         if(result.issue){result.value=raw;rowIssues.push({row:source,column:headers[ci],original:raw,cleaned:raw,issue:result.issue,action:'Review'});stats.invalid++;}
         const didChange=result.value!==raw;
-        if(didChange){stats.changed++;rowAudit.push({row:source,column:headers[ci],original:raw,cleaned:result.value,issue:'Standardized '+TYPES[types[ci]],action:'Changed'});}
+        if(didChange){stats.changed++;rowAudit.push({row:source,column:headers[ci],original:raw,cleaned:result.value,issue:wasNull?'Normalized null marker to blank':'Standardized '+TYPES[types[ci]],action:'Changed'});}
         values.push(result.value);rowFlags.push(Boolean(result.issue));rowChanged.push(didChange);
       }
       if(config.removeEmpty&&values.every(v=>!v.trim())){stats.empty++;audit.push({row:source,column:'Entire row',original:JSON.stringify(row),cleaned:'',issue:'Empty after normalization',action:'Removed empty'});continue;}
@@ -171,7 +191,7 @@
       if(onProgress&&ri%2000===0)onProgress(Math.round((ri+1)/rows.length*100));
     }
     stats.output=output.length;
-    return {rows:output,flags,changed,sourceRows:origins,issues,audit,stats,nullAnalysis:analyzeNulls({headers,rows:output})};
+    return finalizeOutput(headers,{rows:output,flags,changed,sourceRows:origins,issues,audit,stats},config);
   }
   function safeCSVValue(value) {
     const s=String(value??'');
@@ -179,5 +199,5 @@
     return /^[\s\u0000-\u001f]*[=+@-]/.test(s)&&!/^\s*-\d+(?:\.\d+)?\s*$/.test(s)||/^[\t\r\n]/.test(s)?"'"+s:s;
   }
   function toCSV(rows,safe=true){return '\uFEFF'+rows.map(row=>row.map(v=>{const s=safe?safeCSVValue(v):String(v??'');return /[",\r\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;}).join(',')).join('\r\n');}
-  return {LIMITS,TYPES,guess,parseCSV,prepare,phone,email,date,number,clean,analyzeNulls,nullReportRows,toCSV,safeCSVValue};
+  return {LIMITS,TYPES,guess,parseCSV,prepare,phone,email,date,number,clean,analyzeNulls,nullReportRows,finalizeOutput,toCSV,safeCSVValue};
 });

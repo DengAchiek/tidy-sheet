@@ -128,8 +128,8 @@ test('Null analysis still counts preserved markers when their conversion and tri
 });
 test('Null report keeps before and after denominators and leaves unrun results empty',()=>{
   const before=C.analyzeNulls({headers:['Name','Amount'],rows:[['Alice','N/A'],['Bob','0']]}),after=C.analyzeNulls({headers:['Name','Amount'],rows:[['Bob','0']]});
-  assert.deepEqual(C.nullReportRows(before,after)[2],['Amount',2,0,1,1,50,1,0,0,0,0]);
-  assert.deepEqual(C.nullReportRows(before)[2],['Amount',2,0,1,1,50,'','','','','']);
+  assert.deepEqual(C.nullReportRows(before,after)[2],['Amount',2,0,1,1,50,1,0,0,0,0,'Kept']);
+  assert.deepEqual(C.nullReportRows(before)[2],['Amount',2,0,1,1,50,'','','','','','Not cleaned yet']);
 });
 test('Null analysis remains defined when every row is removed by cleaning',()=>{
   const result=run([['Name','Email'],['','null'],['Alice','bad email']],{dropInvalid:true});
