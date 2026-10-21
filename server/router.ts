@@ -27,17 +27,17 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='POST'&&path==='/api/auth/password-reset'){const result=await resetPassword(request,await readJSON(request)),response=json({reset:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
     if(request.method==='POST'&&['/api/auth/recover','/api/auth/recovery-email'].includes(path))return json({error:'recovery_codes_removed',message:'Saved recovery codes are no longer supported. Request a password reset email.'},410);
     if(request.method==='POST'&&path==='/api/auth/password'){const result=await changePassword(request,await readJSON(request)),response=json({changed:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
-    if(request.method==='POST'&&path==='/api/auth/logout'){const user=await currentUser(request),response=json({signedOut:true,nativeSignOut:user?.authSource==='chatgpt'?'/signout-with-chatgpt?return_to=%2Fsheet-cleaner.html':null});response.headers.set('Set-Cookie',await logout(request));return response;}
+    if(request.method==='POST'&&path==='/api/auth/logout'){const user=await currentUser(request),response=json({signedOut:true,nativeSignOut:user?.authSource==='chatgpt'?'/signout-with-chatgpt?return_to=%2Fchoose':null});response.headers.set('Set-Cookie',await logout(request));return response;}
     if(request.method==='POST'&&path==='/api/admin/invitations/create')return json(await issueAdminInvitation(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/invitations/inspect')return json(await inspectAdminInvitation(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/setup/inspect')return json(await inspectAdminSetup(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/setup'){const result=await completeAdminSetup(request,await readJSON(request)),response=json({configured:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
     if(request.method==='GET'&&path==='/admin/setup'){const response=html(adminSetupPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
     if(request.method==='GET'&&path==='/admin/register'){const response=html(adminRegistrationPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
-    if(request.method==='GET'&&['/login','/register'].includes(path))return html(authPage(path==='/register'?'register':'login',url.searchParams.get('returnTo')||'/sheet-cleaner.html'));
+    if(request.method==='GET'&&['/login','/register'].includes(path))return html(authPage(path==='/register'?'register':'login',url.searchParams.get('returnTo')||'/choose'));
     if(request.method==='GET'&&path==='/account/security'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Faccount%2Fsecurity');return html(securityPage(user));}
     if(request.method==='GET'&&path==='/reset-password'){const response=html(resetPasswordPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
-    if(request.method==='GET'&&path==='/forgot-password')return html(authPage('recover',url.searchParams.get('returnTo')||'/sheet-cleaner.html'));
+    if(request.method==='GET'&&path==='/forgot-password')return html(authPage('recover',url.searchParams.get('returnTo')||'/choose'));
     if(request.method==='GET'&&path==='/admin'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fadmin');if(!await isAdmin(user))return html(adminAccessPage(user),403);return html(adminPage(user));}
     if(request.method==='GET'&&path==='/reviews')return html(reviewsPage(await currentUser(request)));
     if(request.method==='POST'&&path==='/api/reviews'){const {user}=await userAccount(request);return json(await submitReview(request,user,await readJSON(request)),201);}
@@ -49,14 +49,14 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='POST'&&path==='/api/telemetry'){const result=await telemetry(request,await readJSON(request),await currentUser(request)),response=json({recorded:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
 
     if(request.method==='GET'&&['/','/index.html'].includes(path))return html(landingPage(await currentUser(request),[]));
-    if(request.method==='GET'&&path==='/choose')return html(choosePage(await currentUser(request)));
+    if(request.method==='GET'&&path==='/choose'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo='+encodeURIComponent('/choose'+(url.searchParams.get('sample')==='1'?'?sample=1':'')));return html(choosePage(user,url.searchParams.get('sample')==='1'));}
     if(request.method==='GET'&&path==='/training'){
-      const user=await currentUser(request);if(!user)return redirect('/account');const account=await accountFor(user),sub=await subscriptionFor(user.userId),access=subscriptionAccess(account,sub,Date.now(),billingMode());
+      const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fchoose');if(url.searchParams.get('purpose')!=='training')return redirect('/choose');const account=await accountFor(user),sub=await subscriptionFor(user.userId),access=subscriptionAccess(account,sub,Date.now(),billingMode());
       if(!access.training)return redirect('/account?access=training');return html(trainingPage(user,access));
     }
     if(request.method==='GET'&&path==='/privacy.html')return html(privacyPage(await currentUser(request)));
     if(request.method==='GET'&&['/cleaner','/sheet-cleaner.html'].includes(path)){
-      return html(cleanerPage(await currentUser(request),{allowed:true,business:true,training:false,source:'public'},false));
+      const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fchoose');if(url.searchParams.get('purpose')!=='business')return redirect('/choose'+(url.searchParams.get('sample')==='1'?'?sample=1':''));return html(cleanerPage(user,{allowed:true,business:true,training:false,source:'account'},false));
     }
     if(request.method==='GET'&&path==='/account'){
       const user=await currentUser(request),{plans,notice:planNotice}=await safePlans();

@@ -12,7 +12,7 @@
   async function work(fn,operation='import'){if(busy)return;activeOperation=operation;operationStarted=performance.now();lock(true);try{await fn();}catch(e){if(e.message!=='Cancelled'){notify(e.message,true);record(operation,'failure',performance.now()-operationStarted);}}finally{lock(false);}}
   async function authorize(record=false){const generation=cancelGeneration;
     const response=await fetch(record?'/api/usage/clean':'/api/session',record?{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:crypto.randomUUID(),mode:'training',rows:loaded.rows,columns:loaded.headers.length})}:{credentials:'same-origin',cache:'no-store'});
-    const value=await response.json();if(generation!==cancelGeneration)throw Error('Cancelled');if(!response.ok||(!record&&!value.access?.training))throw Error(value.message||'Premium or an active trial is required. Open your account to continue.');
+    const value=await response.json();if(generation!==cancelGeneration)throw Error('Cancelled');if(!record&&!value.user){location.assign('/login?returnTo=%2Fchoose');throw Error('Sign in again to continue.');}if(!response.ok||(!record&&!value.access?.training))throw Error(value.message||'Premium or an active trial is required. Open your account to continue.');
   }
   function table(headers,rows){$('mlPreview').innerHTML='<thead><tr>'+headers.map(h=>'<th>'+escape(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.map(r=>'<tr>'+r.map(v=>'<td title="'+escape(v)+'">'+escape(String(v).slice(0,160))+'</td>').join('')+'</tr>').join('')+'</tbody>';}
   function invalidate(){hasResult=false;$('mlResult').hidden=true;}
@@ -29,14 +29,14 @@
     $('mlPreviewTitle').textContent='Source preview';table(data.headers,data.preview);notify('Datasets loaded locally. Confirm the target and feature roles.'+(data.warnings.length?' '+data.warnings.join(' '):''));
   }
   async function load(files,sample=false){trainingSample=sample;const start=performance.now();await authorize();notify('Reading datasets on your device…');render(await call('load',{files,union:$('mlUnion').checked}));importStarted=start;firstExport=null;record('import','success',performance.now()-start);}
-  $('mlBrowse').onclick=()=>$('mlFiles').click();$('mlFiles').onchange=()=>{const files=Array.from($('mlFiles').files);if(files.length)work(()=>load(files));};
+  $('mlBrowse').onclick=async()=>{try{await authorize();$('mlFiles').click();}catch(error){notify(error.message,true);}};$('mlFiles').onchange=()=>{const files=Array.from($('mlFiles').files);if(files.length)work(()=>load(files));};
   $('mlDrop').ondragover=e=>{e.preventDefault();$('mlDrop').classList.add('dragging');};$('mlDrop').ondragleave=()=>$('mlDrop').classList.remove('dragging');$('mlDrop').ondrop=e=>{e.preventDefault();$('mlDrop').classList.remove('dragging');if(e.dataTransfer.files.length)work(()=>load(Array.from(e.dataTransfer.files)));};
   $('mlSample').onclick=()=>work(async()=>{const rows=['record_id,age,income,segment,label'];for(let i=0;i<80;i++)rows.push([i+1,i%11===0?'':20+i%45,15000+i*420,i%3===0?'retail':'business',i%2?'retained':'churned'].join(','));await load([new File([rows.join('\n')],'training_sample.csv',{type:'text/csv'})],true);});
   $('mlTask').onchange=taskChanged;$('mlSplit').onchange=()=>{splitChanged();invalidate();};
   $('mlUnion').onchange=()=>{if(loaded)work(async()=>render(await call('load',{union:$('mlUnion').checked,sheets:loaded.files.map(f=>f.sheet)})));};
   $('mlSheets').onchange=e=>{if(e.target.matches('[data-sheet]'))work(async()=>{const sheets=loaded.files.map(f=>f.sheet);sheets[Number(e.target.dataset.sheet)]=e.target.value;render(await call('load',{union:$('mlUnion').checked,sheets}));});};
   $('mlWorkspace').addEventListener('change',e=>{if(e.target.id!=='mlSafeCSV')invalidate();});
-  $('mlReset').onclick=()=>{worker.terminate();init();loaded=null;hasResult=false;$('mlFiles').value='';$('mlWorkspace').hidden=true;$('mlDrop').hidden=false;$('mlSample').hidden=false;message.hidden=true;};
+  $('mlReset').onclick=()=>location.assign('/choose');
   $('mlPrepare').onclick=()=>work(async()=>{
     invalidate();await authorize();notify('Splitting and fitting preprocessing on training rows…');const config={task:$('mlTask').value,target:Number($('mlTarget').value),roles:Array.from(document.querySelectorAll('[data-role]')).map(s=>s.value),splitMethod:$('mlSplit').value,timeColumn:Number($('mlTime').value),groupColumn:Number($('mlGroup').value),validation:Number($('mlValidation').value)/100,test:Number($('mlTest').value)/100,seed:Number($('mlSeed').value),missingTokens:$('mlMissing').value.split(',').map(s=>s.trim()).filter(Boolean),numericMissing:$('mlNumeric').value,categoricalMissing:$('mlCategorical').value,encoding:$('mlEncoding').value,scaling:$('mlScaling').value,trim:$('mlTrim').checked,removeDuplicates:$('mlDuplicates').checked,dropConstant:$('mlConstant').checked};
     const result=await call('prepare',{config});await authorize(true);hasResult=true;$('mlResult').hidden=false;$('mlPreviewTitle').textContent='Prepared training preview';table(result.headers,result.preview);

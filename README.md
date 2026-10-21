@@ -1,8 +1,8 @@
 # TidySheet
 
-A browser-local CSV and Excel cleaner with direct, free access. The landing page's cleaning buttons open the uploader, where visitors sign in or register to import, clean, review and export their own files. The sample remains available without an account; business cleaning needs no subscription. The navbar stays visible while scrolling.
+A browser-local CSV and Excel cleaner. The landing page’s cleaning buttons require sign-in, then present the business/model-training purpose chooser before any uploader. Samples also require sign-in; business cleaning needs no subscription. The navbar stays visible while scrolling.
 
-Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. The cleaner and sample remain publicly accessible on both deployments. Users sign in or register before importing their own files. Accounts, billing, training workspaces, and the admin dashboard have server-side access checks.
+Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. Users must sign in before entering either workspace or trying sample data. Open cleaner leads to sign-in, then the purpose chooser before an uploader appears. Accounts, billing, training workspaces, and the admin dashboard have server-side access checks.
 
 ## Billing activation status
 
@@ -26,7 +26,7 @@ node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1
 
 This command needs a Cloudflare credential with D1 write access. The database can also be initialized through its dashboard SQL console using the existing migration files in order. Do not replay already applied migrations. Leave `TIDYSHEET_D1_DATABASE_ID` unset for local previews and Sites publication, where Sites provisions the hosted database. Local previews continue to use a placeholder ID with Wrangler's `--local` flag.
 
-Standalone builds also emit `TIDYSHEET_IDENTITY_MODE=disabled`: they cannot trust the Sites identity headers without its gateway. Public pages and the free sample remain available. Email-and-password registration and sessions work on both deployments. Password reset emails require Resend configuration on each host. Sites publication also preserves native ChatGPT sign-in. Password accounts are never automatically linked to a ChatGPT account with the same email.
+Standalone builds also emit `TIDYSHEET_IDENTITY_MODE=disabled`: they cannot trust the Sites identity headers without its gateway. Marketing pages remain public. Workspaces and samples require sign-in and a selected purpose. Email-and-password registration and sessions work on both deployments. Password reset emails require Resend configuration on each host. Sites publication also preserves native ChatGPT sign-in. Password accounts are never automatically linked to a ChatGPT account with the same email.
 
 ```sh
 git clone https://github.com/DengAchiek/tidy-sheet.git
@@ -65,7 +65,7 @@ Browser QA covers account creation, access checks, the free sample, a synthetic 
 - `public/assets/`: browser-local business and training preparation engines, workers, styles, and bundled SheetJS library.
 - `.openai/hosting.json`: existing Site identity and D1 binding. No secrets.
 
-The business cleaner shell is public, and choosing an own file opens an authentication dialog. A dropped file is retained only in memory while the visitor signs in; canceling the dialog leaves the sample available. Imported contents and filenames never leave the device. Own-file cleaning checks an active login; business access is free, while training retains its entitlement checks. Bounded processing metadata and page paths feed an administrator-only dashboard. The sample URL preloads example data and own-file importing still requires sign-in. **The cleaning engine is open-source client code**; browser-only execution cannot provide DRM over it.
+The workspace entry flow is **Open cleaner → sign in/register → choose business cleaning or model training → upload**. `/choose` requires authentication. Direct business/training routes without a purpose return to the chooser; explicit selected-purpose URLs still check authentication and training entitlements on the server. Login returns aimed at workspaces are normalized to `/choose`, including native sign-in. New file/start over returns to the chooser. Browser file selection, imports, cleaning and exports recheck the active session. Business cleaning remains free after sign-in; training retains its existing trial/Premium checks. No file contents or filenames leave the device. The cleaning engine is client-side code; the page access guards are not DRM over downloadable JavaScript.
 
 ## Account and subscription behavior
 
@@ -76,7 +76,7 @@ The business cleaner shell is public, and choosing an own file opens an authenti
 - Refunds and disputes revoke paid access. Replayed callbacks/webhooks do not restore a reversed payment or create duplicate receipts.
 - Paystack test subscriptions cannot unlock live-mode access. Missing credentials never create a fake subscriber.
 - `Manage billing` opens Paystack to update payment details or cancel renewal. To change billing cycle, cancel the existing renewal and choose the new cycle after the previous subscription ends. Prorated plan changes are not implemented.
-- Trials default to **7 days** and are issued once per site account. Repeated sign-in cannot extend a trial. Trials expire without charging a card. A free sample remains available without payment or an account.
+- Trials default to **7 days** and are issued once per site account. Repeated sign-in cannot extend a trial. Trials expire without charging a card. Business sample data is available after sign-in and purpose selection without payment.
 
 ## Training dataset preparation
 

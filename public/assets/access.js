@@ -1,8 +1,7 @@
 'use strict';
 (()=>{
-  let user=null,waiting=null;
-  const dialog=document.getElementById('uploadAuthDialog');
-  const returnTo=document.querySelector('[data-auth-return]')?.dataset.authReturn||'/sheet-cleaner.html';
+  let user=null;
+  const returnTo=document.querySelector('[data-auth-return]')?.dataset.authReturn||'/choose';
   const request=async(path,body)=>{
     const response=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await response.json();
@@ -20,10 +19,7 @@
     }
     return data;
   }
-  function complete(){
-    if(dialog?.open){const resolve=waiting;waiting=null;dialog.close();resolve?.(user);}
-    else location.assign(returnTo);
-  }
+  function complete(){location.assign(returnTo);}
   const root=document.querySelector('[data-auth-root]');
   if(root){
     const privateRegistration=root.hasAttribute('data-admin-registration'),emailReady=root.dataset.emailReady==='true';
@@ -46,7 +42,7 @@
       form.elements.password.value='';form.elements.confirmPassword.value='';
       form.elements.password.autocomplete=creating?'new-password':'current-password';form.elements.password.minLength=creating?15:1;
       title.textContent=recovering?'Forgot password?':creating?'Create your account':'Welcome back.';
-      description.textContent=recovering?'We’ll email you a private link to choose a new password.':privateRegistration?'Create your administrator account, or sign in if you already have one.':'Sign in to clean your own spreadsheet. Your file stays on your device.';
+      description.textContent=recovering?'We’ll email you a private link to choose a new password.':privateRegistration?'Create your administrator account, or sign in if you already have one.':'Sign in, choose business cleaning or model training, then upload your file. Your file stays on your device.';
       submit.textContent=recovering?'Email me a reset link':creating?'Create account & continue':'Sign in & continue';
       if(privateRegistration&&!recovering){title.textContent=creating?'Your admin workspace.':'Sign in as administrator';submit.textContent=creating?'Create account & activate admin':'Sign in & activate admin';}
       if(privateRegistration&&recovering)description.textContent='Reset your password using the email link, then return to this invitation to sign in.';
@@ -93,9 +89,8 @@
       }finally{lock(false);}
     };
   }
-  if(dialog){document.querySelector('[data-auth-close]').onclick=()=>dialog.close();dialog.addEventListener('close',()=>{waiting?.(null);waiting=null;});}
-  window.TidyAccess={async ensure(){const data=await session();if(data.user)return data.user;if(!dialog){location.assign('/login');return null;}return new Promise(resolve=>{waiting=resolve;dialog.showModal();});},session};
-  document.querySelectorAll('[data-signout]').forEach(b=>b.onclick=async e=>{e.preventDefault();b.disabled=true;try{const data=await request('/api/auth/logout',{});location.assign(data.nativeSignOut||'/sheet-cleaner.html');}catch(error){b.disabled=false;const p=document.createElement('p');p.setAttribute('role','alert');p.textContent=error.message;b.after(p);}});
+  window.TidyAccess={async ensure(){const data=await session();if(data.user)return data.user;location.assign('/login?returnTo=%2Fchoose');return null;},session};
+  document.querySelectorAll('[data-signout]').forEach(b=>b.onclick=async e=>{e.preventDefault();b.disabled=true;try{const data=await request('/api/auth/logout',{});location.assign(data.nativeSignOut||'/choose');}catch(error){b.disabled=false;const p=document.createElement('p');p.setAttribute('role','alert');p.textContent=error.message;b.after(p);}});
   const claim=document.getElementById('adminClaimForm');
   if(claim)claim.onsubmit=async e=>{e.preventDefault();const button=claim.querySelector('button'),notice=document.getElementById('adminClaimMessage');button.disabled=true;notice.hidden=true;try{await request('/api/admin/claim',{code:claim.elements.code.value});claim.elements.code.value='';location.assign('/admin');}catch(error){notice.textContent=error.message;notice.hidden=false;}finally{button.disabled=false;}};
   const passwordForm=document.getElementById('passwordChangeForm');

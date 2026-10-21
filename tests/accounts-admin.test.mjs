@@ -82,7 +82,7 @@ test('Dashboard applies UTC windows, separates samples and real outcomes, and sh
  const wide=await h.analytics.dashboard(90);assert.equal(wide.traffic.pageViews,1);await assert.rejects(h.analytics.dashboard(365),e=>e.status===400);
 });
 test('Login return targets are confined to application pages and native sign-in is hidden on standalone Workers',()=>{
- const h=harness(),page=h.render.authPage('login','//evil.example/steal');assert.match(page,/data-auth-return="\/sheet-cleaner.html"/);assert.doesNotMatch(page,/href="\/signin-with-chatgpt/);
+ const h=harness(),page=h.render.authPage('login','//evil.example/steal');assert.match(page,/data-auth-return="\/choose"/);assert.doesNotMatch(page,/href="\/signin-with-chatgpt/);
 });
 
 test('A private admin invitation requires the intended email and code, is consumed once, and cannot restore revoked access',async()=>{
