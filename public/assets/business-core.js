@@ -1,7 +1,7 @@
 /* Declarative business rules. Dataset values never leave the processing worker. */
 (function(root,factory){const api=factory(typeof module==='object'&&module.exports?require('./core.js'):root.TidyCore);if(typeof module==='object'&&module.exports)module.exports=api;else root.TidyBusiness=api;})(typeof self!=='undefined'?self:globalThis,function(C){
   'use strict';
-  const missing=v=>!String(v??'').trim()||/^(?:n\/a|na|null|none|nil|undefined|-+)$/i.test(String(v).trim());
+  const missing=v=>!String(v??'').trim()||/^(?:n\/a|na|nan|nat|null|none|nil|undefined|-+)$/i.test(String(v).trim());
   function decimal(value,precision=6){const text=String(value);if(text.length>120||!new RegExp('^-?\\d+(?:\\.\\d{1,'+precision+'})?$').test(text))return null;const [whole,fraction='']=text.replace(/^-/,'').split('.');return (BigInt(whole)*10n**BigInt(precision)+BigInt(fraction.padEnd(precision,'0')))*(text.startsWith('-')?-1n:1n);}
   function compareNumbers(a,b){a=C.number(a).value;b=C.number(b).value;const precision=Math.max(a.split('.')[1]?.length||0,b.split('.')[1]?.length||0,1),x=decimal(a,precision),y=decimal(b,precision);return x<y?-1:x>y?1:0;}
   const templates={general:'General spreadsheet',customers:'Customer list',sales:'Sales / invoices',inventory:'Inventory',suppliers:'Supplier list'};

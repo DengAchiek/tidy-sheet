@@ -40,5 +40,5 @@ test('Selecting a sample preserves the intent on the chooser without bypassing s
   const anon=await get(app().route,'/choose?sample=1');assert.equal(anon.headers.get('location'),'/login?returnTo=%2Fchoose%3Fsample%3D1');const signed=app(identity);assert.equal((await get(signed.route,'/sheet-cleaner.html?sample=1')).headers.get('location'),'/choose?sample=1');assert.match(await (await get(signed.route,'/choose?sample=1')).text(),/purpose=business&amp;sample=1/);
 });
 test('Anonymous requests cannot use billing, trials, or stored cleaning APIs',async()=>{
-  const {route}=app();for(const path of ['/api/trial','/api/billing/checkout','/api/activity','/api/usage/clean']){const response=await route(new Request('https://example.com'+path,{method:'POST',headers:{origin:'https://example.com','Content-Type':'application/json'},body:'{}'}));assert.equal(response.status,401,path);}
+  const {route}=app();for(const path of ['/api/trial','/api/billing/checkout','/api/activity','/api/usage/clean','/api/cleaning/run']){const response=await route(new Request('https://example.com'+path,{method:'POST',headers:{origin:'https://example.com','Content-Type':'application/json'},body:'{}'}));assert.equal(response.status,401,path);}
 });

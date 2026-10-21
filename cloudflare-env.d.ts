@@ -14,5 +14,8 @@ declare namespace Cloudflare {
     SUPPORT_EMAIL?:string;
     RESEND_API_KEY?:string;
     RECOVERY_EMAIL_FROM?:string;
+    CLEANING_API_URL?:string;
+    CLEANING_API_TOKEN?:string;
+    CLEANING_LOCAL_DEV?:string;
   }
 }

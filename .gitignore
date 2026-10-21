@@ -54,8 +54,15 @@ next-env.d.ts
 /.codex/
 /outputs/
 /work/
+/.venv-cleaning/
+__pycache__/
+.pytest_cache/
+/backend/gateway/node_modules/
+/backend/gateway/.wrangler/
 
 !.env.example
 *.tsbuildinfo
 .dev.vars*
 !.dev.vars.example
+
+/backend/.wheelhouse/

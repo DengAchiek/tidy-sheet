@@ -17,6 +17,11 @@ export async function handleRequest(request:Request):Promise<Response>{
   try{
     if(path==='/api/billing/webhook'&&request.method==='POST')return json(await processWebhook(request));
     if(request.method==='POST')sameOrigin(request);
+    if(path==='/api/cleaning/run'&&request.method==='POST'){
+      const {user}=await userAccount(request);
+      const {rateLimit}=await import('./auth');await rateLimit(request,'python-cleaning',user.userId,20);
+      const {proxyPythonCleaning}=await import('./python-cleaning');return await proxyPythonCleaning(request);
+    }
     if(request.method==='POST'&&['/api/auth/register','/api/auth/login'].includes(path)){
       const result=await (path.endsWith('register')?register:login)(request,await readJSON(request));
       await authEvent(request,result.user,path.endsWith('register')?'registration':'login');

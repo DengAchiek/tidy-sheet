@@ -8,7 +8,7 @@
   const LIMITS = { bytes: 20 * 1024 * 1024, rows: 100000, columns: 100, cells: 1000000 };
   const TYPES = { text: 'Text / ID', name: 'Person name', email: 'Email', phone: 'Kenyan mobile', date: 'Date', number: 'Number / amount' };
   const MONTHS = ['january','february','march','april','may','june','july','august','september','october','november','december'];
-  const NULL_MARKER = /^(?:n\/a|na|null|none|nil|-+|undefined)$/i;
+  const NULL_MARKER = /^(?:n\/a|na|nan|nat|null|none|nil|-+|undefined)$/i;
   function analyzeNulls({headers,rows,columnIndices}) {
     const columns=headers.map(name=>({name,blank:0,markers:0,missing:0,percentage:0}));
     let rowsWithMissing=0;

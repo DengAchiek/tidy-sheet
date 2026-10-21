@@ -71,5 +71,5 @@
       "sharp": "0.35.4"
     }
   },
-  "description": "TidySheet subscription SaaS with private browser-local cleaning"
+  "description": "TidySheet data cleaning with on-device and pandas/NumPy server processing"
 }

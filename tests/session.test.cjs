@@ -26,3 +26,25 @@ test('A manual correction can restore a formerly empty column, and fuzzy merges 
  const h=harness(),meta=await h.call('import',{file:new File(['Company,Empty,Email\nNexalix Ltd,,a@example.com\nNexalix Limited,,b@example.com'],'entities-with-gap.csv'),session:true}),c={...config(meta.headers),removeEmptyColumns:true};c.business.fuzzy={enabled:true,column:0,scope:-1,threshold:90};let r=await h.call('cleanSession',{config:c});assert.equal(r.outputHeaders.length,2);assert.equal(r.duplicates.pairs[0].left.length,3);
  await h.call('mergeSession',{keep:2,drop:3,choices:['left','left','right']});r=await h.call('cleanSession',{config:c});assert.equal(r.stats.output,1);assert.equal((await h.call('page',{view:'cleaned'})).items[0].values[1],'b@example.com');await h.call('undoMerge');await h.call('editSession',{row:2,column:1,value:'restored'});r=await h.call('cleanSession',{config:c});assert.equal(r.outputHeaders.length,3);assert.equal((await h.call('page',{view:'original'})).items[0].values[1],'');
 });
+
+test('Python backend results feed the existing preview, CSV, Excel, quality report and source row alignment',async()=>{
+ const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/python-cleaning-result.json'),'utf8'));
+ const h=harness(),headers=fixture.model.headers,c={...config(headers),removeEmptyColumns:true,removeDuplicates:true};
+ const csv=C.toCSV([headers,...fixture.model.rows],false);await h.call('import',{file:new File([csv],'python-check.csv'),session:true});
+ const payload=await h.call('backendPayload',{config:c});assert.deepEqual(JSON.parse(JSON.stringify(payload.model)),fixture.model);
+ const out=await h.call('applyBackend',{config:c,result:fixture.result});assert.equal(out.engine,'pandas-numpy-seaborn');assert.equal(out.stats.output,2);assert.equal(out.stats.emptyColumns,2);
+ const page=await h.call('page',{view:'cleaned'});assert.deepEqual(JSON.parse(JSON.stringify(page.headers)),['ID','Amount']);assert.deepEqual(JSON.parse(JSON.stringify(page.items.map(r=>r.values))),[['001','12500'],['002','0']]);
+ const original=await h.call('page',{view:'original'});assert.equal(original.items.length,4);assert.equal(original.headers.length,4);
+ const bytes=await h.call('xlsx',{session:true}),wb=X.read(bytes,{type:'array'});assert.equal(wb.Sheets.Cleaned.A2.v,'001');assert.equal(wb.Sheets.Cleaned.B3.v,0);
+ const exported=await h.call('sessionCSV',{});assert.match(exported.buffers.map(b=>new TextDecoder().decode(b)).join(''),/ID,Amount\r\n001,12500\r\n002,0/);
+ await assert.rejects(h.call('applyBackend',{config:c,result:{...fixture.result,outputHeaders:['Wrong','Amount']}}),/invalid result/);
+ const after=await h.call('page',{view:'cleaned'});assert.equal(after.count,2);
+});
+
+ test('Review editor uses the complete source value when Python audit text is shortened',async()=>{
+ const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/python-cleaning-result.json'),'utf8')),long='invalid-number-'.repeat(40);
+ fixture.model.rows[0][2]=long;fixture.result.rows[0][2]=long;fixture.result.flags[0][2]=true;fixture.result.issues=[{row:fixture.model.sourceRows[0],column:'Amount',original:long.slice(0,300),issue:'Invalid number',action:'Review'}];
+ const h=harness(),c={...config(fixture.model.headers),removeEmptyColumns:true,removeDuplicates:true};
+ await h.call('import',{file:new File([C.toCSV([fixture.model.headers,...fixture.model.rows],false)],'long-value.csv'),session:true});
+ await h.call('applyBackend',{config:c,result:fixture.result});const issue=await h.call('getIssue',{index:0});assert.equal(issue.original,long);
+ });

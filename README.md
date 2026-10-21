@@ -1,6 +1,6 @@
 # TidySheet
 
-A browser-local CSV and Excel cleaner. The landing page’s cleaning buttons require sign-in, then present the business/model-training purpose chooser before any uploader. Samples also require sign-in; business cleaning needs no subscription. The navbar stays visible while scrolling.
+A CSV and Excel cleaner with on-device processing and an optional pandas/NumPy backend with Seaborn outcome charts. The landing page’s cleaning buttons require sign-in, then present the business/model-training purpose chooser before any uploader. Samples also require sign-in; business cleaning needs no subscription. The navbar stays visible while scrolling.
 
 Training dataset preparation retains its account and entitlement checks, with a **$0, 7-day trial** and **Premium at $20 USD/month or $240 USD/year**. Legacy Regular subscriptions remain supported by the billing backend. Users must sign in before entering either workspace or trying sample data. Open cleaner leads to sign-in, then the purpose chooser before an uploader appears. Accounts, billing, training workspaces, and the admin dashboard have server-side access checks.
 
@@ -12,7 +12,7 @@ See [Billing setup](docs/BILLING_SETUP.md) for the remaining merchant setup, run
 
 ## Local development
 
-Requires Node.js **22.13 or later** and npm. Python is no longer required.
+Requires Node.js **22.13 or later** and npm for the web app. The optional server cleaning service uses Python 3.12 and Docker; local-only cleaning does not require Python.
 
 The Cloudflare toolchain is pinned together: Wrangler `4.151.2`, Workers types `5.20261019.1`, and Vite plugin `1.64.0`. Commit both `package.json` and `package-lock.json` when changing these versions, and use `npm run install:ci` (or `npm ci`) in build environments. Wrangler `4.151.2` requires Workers types `^5.20261019.1`; the older `4.20260515.1` pin causes npm `ERESOLVE` if Wrangler is upgraded alone. Resolve the package versions rather than using `--force` or `--legacy-peer-deps`.
 
@@ -65,7 +65,7 @@ Browser QA covers account creation, access checks, the free sample, a synthetic 
 - `public/assets/`: browser-local business and training preparation engines, workers, styles, and bundled SheetJS library.
 - `.openai/hosting.json`: existing Site identity and D1 binding. No secrets.
 
-The workspace entry flow is **Open cleaner → sign in/register → choose business cleaning or model training → upload**. `/choose` requires authentication. Direct business/training routes without a purpose return to the chooser; explicit selected-purpose URLs still check authentication and training entitlements on the server. Login returns aimed at workspaces are normalized to `/choose`, including native sign-in. New file/start over returns to the chooser. Browser file selection, imports, cleaning and exports recheck the active session. Business cleaning remains free after sign-in; training retains its existing trial/Premium checks. No file contents or filenames leave the device. The cleaning engine is client-side code; the page access guards are not DRM over downloadable JavaScript.
+The workspace entry flow is **Open cleaner → sign in/register → choose business cleaning or model training → upload**. `/choose` requires authentication. Direct business/training routes without a purpose return to the chooser; explicit selected-purpose URLs still check authentication and training entitlements on the server. Login returns aimed at workspaces are normalized to `/choose`, including native sign-in. New file/start over returns to the chooser. Browser file selection, imports, cleaning and exports recheck the active session. Business cleaning remains free after sign-in; training retains its existing trial/Premium checks. On-device mode keeps file contents in the browser. Python server mode sends selected worksheet values and rules to the private backend when Clean is clicked, as disclosed before upload. The original filename is not sent. Page access guards are not DRM over downloadable JavaScript.
 
 ## Account and subscription behavior
 
@@ -202,3 +202,32 @@ The overview and review inbox share a sticky sidebar with a saved collapse prefe
 ### Empty columns and visible cleaning actions
 
 Business cleanup now defaults to removing empty rows and optional columns that contain only blanks after normalization. Null-marker conversion is independent of whitespace trimming; zero and false remain values. Columns referenced by explicit business rules, duplicate keys, configured summaries or required/fill policies remain available for review. An all-empty result keeps its source headers as an export schema. Original preview, corrections and reviewed merges retain the full input schema; cleaned preview, CSV and Excel use the retained output columns. Null reports match columns by name and label removed columns explicitly. Cleaning totals separate empty rows, empty columns, null markers, standardized values and duplicates. The fixed bottom Clean bar stays visible throughout the uploaded-file workspace.
+
+### Python server cleaning and outcome charts
+
+The business cleaner offers two explicit processing locations before a run. On-device mode retains the existing browser worker. Python server mode sends the selected worksheet values, original column names and cleaning rules through the signed-in, same-origin `/api/cleaning/run` endpoint. No service credential reaches the browser. The model-training workspace remains on-device.
+
+`backend/cleaning.py` uses pandas DataFrames for normalization and deduplication and NumPy masks for missing-value counts. It preserves strings/leading zeros and exact decimal amounts, retains invalid inputs for review by default, applies explicit fill/drop policies, protects required/referenced columns, and validates date-order/quantity-total rules. NaN and NaT are recognized null markers in both business engines. Fuzzy duplicate suggestions, reviewed merge history and descriptive business summaries reuse the existing browser review workflow over the returned cleaned rows.
+
+`backend/charts.py` generates Seaborn PNGs for row outcomes, per-column missingness and up to three numeric distributions when each phase has at least five usable numbers. Charts include population sizes, downloadable PNGs and inspectable source tables. Removed columns have no after percentage. Numeric outliers remain in the dataset unless the user’s explicit rules remove their rows. See `backend/chart-plan.md` for chart definitions.
+
+Server limits are 50,000 rows, 100 columns, 100,000 cells, 6 MB JSON request and 24 MB response. The service holds datasets and figures in memory for the request, does not persist uploads, and does not log request values. Audit/issue lists are bounded at 10,000 events, with audit values shortened to 300 characters; aggregate counts and retained output values cover the full run. An explicit message explains a busy service, timeout, exceeded limit or unavailable backend. Switching to on-device mode is always explicit.
+
+The FastAPI service authenticates a server-only bearer secret and admits one processing job per container. The Cloudflare gateway uses a maximum of two `basic` instances, sleeps idle instances after one minute and disables container outbound Internet access. Containers require a Workers Paid plan. Do not change or subscribe to a plan automatically.
+
+Local checks and preview:
+
+```sh
+python3 -m venv .venv-cleaning
+.venv-cleaning/bin/python -m pip install -r backend/requirements.txt pytest httpx
+MPLCONFIGDIR=.sites-runtime/matplotlib .venv-cleaning/bin/python -m pytest backend/tests
+npm test
+npm run typecheck
+# Set CLEANING_API_TOKEN privately in the service environment, then run:
+cd backend
+../.venv-cleaning/bin/python -m uvicorn app:app --host 127.0.0.1 --port 8008 --no-access-log
+```
+
+Configure the app’s ignored local `.dev.vars` with `CLEANING_API_URL=http://127.0.0.1:8008`, the same `CLEANING_API_TOKEN` and `CLEANING_LOCAL_DEV=true` for local preview only. Never commit or print service credentials. API tests use a disposable test-only secret.
+
+For production, install the pinned dependency in `backend/gateway` with `npm ci`, ensure Docker is running, and deploy `backend/gateway/wrangler.jsonc`. Keep `CLEANING_API_TOKEN` as a Worker secret on both the gateway and the main app. Set the main app’s `CLEANING_API_URL` to the deployed gateway’s HTTPS origin. The gateway passes its token to the container at runtime, not at image build time. Apply equivalent runtime settings to Sites and publish a saved version to activate them. Never enable `CLEANING_LOCAL_DEV` on a hosted deployment. The Python option is disabled until a backend URL and token are configured; the app does not pretend browser processing uses pandas.

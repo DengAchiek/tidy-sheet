@@ -1,0 +1,262 @@
+{
+  "model": {
+    "headers": [
+      "ID",
+      "Empty",
+      "Amount",
+      "NullOnly"
+    ],
+    "rows": [
+      [
+        "001",
+        "",
+        "KES 12,500.00",
+        "null"
+      ],
+      [
+        "001",
+        "",
+        "12500",
+        "N/A"
+      ],
+      [
+        "002",
+        "",
+        "0",
+        "NaN"
+      ],
+      [
+        "",
+        "",
+        "",
+        ""
+      ]
+    ],
+    "sourceRows": [
+      2,
+      3,
+      4,
+      5
+    ]
+  },
+  "result": {
+    "rows": [
+      [
+        "001",
+        "",
+        "12500",
+        ""
+      ],
+      [
+        "002",
+        "",
+        "0",
+        ""
+      ]
+    ],
+    "sourceRows": [
+      2,
+      4
+    ],
+    "flags": [
+      [
+        false,
+        false,
+        false,
+        false
+      ],
+      [
+        false,
+        false,
+        false,
+        false
+      ]
+    ],
+    "changed": [
+      [
+        false,
+        false,
+        true,
+        true
+      ],
+      [
+        false,
+        false,
+        false,
+        true
+      ]
+    ],
+    "outputColumnIndices": [
+      0,
+      2
+    ],
+    "outputHeaders": [
+      "ID",
+      "Amount"
+    ],
+    "removedColumns": [
+      {
+        "index": 1,
+        "name": "Empty"
+      },
+      {
+        "index": 3,
+        "name": "NullOnly"
+      }
+    ],
+    "stats": {
+      "input": 4,
+      "output": 2,
+      "changed": 4,
+      "duplicates": 1,
+      "empty": 1,
+      "invalid": 0,
+      "dropped": 0,
+      "review": 0,
+      "nulls": 3,
+      "businessDropped": 0,
+      "filled": 0,
+      "emptyColumns": 2,
+      "outputColumns": 2
+    },
+    "nullAnalysis": {
+      "rowCount": 2,
+      "cellCount": 4,
+      "blank": 0,
+      "markers": 0,
+      "missing": 0,
+      "percentage": 0.0,
+      "rowsWithMissing": 0,
+      "completeRows": 2,
+      "columns": [
+        {
+          "name": "ID",
+          "blank": 0,
+          "markers": 0,
+          "missing": 0,
+          "percentage": 0.0
+        },
+        {
+          "name": "Amount",
+          "blank": 0,
+          "markers": 0,
+          "missing": 0,
+          "percentage": 0.0
+        }
+      ],
+      "removedColumns": [
+        "Empty",
+        "NullOnly"
+      ]
+    },
+    "quality": {
+      "requiredCells": 0,
+      "requiredMissing": 0,
+      "missing": 0,
+      "cells": 4,
+      "flaggedCells": 0,
+      "consistencyChecked": 0,
+      "consistencyFailed": 0,
+      "errors": 0,
+      "warnings": 0,
+      "accuracy": "Not verified against authoritative records",
+      "timeliness": "Freshness requirements depend on your business."
+    },
+    "audit": [
+      {
+        "row": 5,
+        "column": "Entire row",
+        "original": "",
+        "cleaned": "",
+        "issue": "Entire row empty before fill policies",
+        "action": "Removed empty",
+        "severity": "info"
+      },
+      {
+        "row": 2,
+        "column": "Amount",
+        "original": "KES 12,500.00",
+        "cleaned": "12500",
+        "issue": "Standardized number",
+        "action": "Changed",
+        "severity": "info"
+      },
+      {
+        "row": 2,
+        "column": "NullOnly",
+        "original": "null",
+        "cleaned": "",
+        "issue": "Normalized null marker to blank",
+        "action": "Changed",
+        "severity": "info"
+      },
+      {
+        "row": 3,
+        "column": "NullOnly",
+        "original": "N/A",
+        "cleaned": "",
+        "issue": "Normalized null marker to blank",
+        "action": "Changed",
+        "severity": "info"
+      },
+      {
+        "row": 4,
+        "column": "NullOnly",
+        "original": "NaN",
+        "cleaned": "",
+        "issue": "Normalized null marker to blank",
+        "action": "Changed",
+        "severity": "info"
+      },
+      {
+        "row": 3,
+        "column": "Entire row",
+        "original": "",
+        "cleaned": "",
+        "issue": "Matching duplicate key; first record kept",
+        "action": "Removed duplicate",
+        "severity": "info"
+      },
+      {
+        "row": "",
+        "column": "Empty",
+        "original": "",
+        "cleaned": "",
+        "issue": "All retained values are empty after cleaning.",
+        "action": "Removed empty column",
+        "severity": "info"
+      },
+      {
+        "row": "",
+        "column": "NullOnly",
+        "original": "",
+        "cleaned": "",
+        "issue": "All retained values are empty after cleaning.",
+        "action": "Removed empty column",
+        "severity": "info"
+      }
+    ],
+    "issues": [
+      {
+        "row": 3,
+        "column": "Entire row",
+        "original": "",
+        "cleaned": "",
+        "issue": "Matching duplicate key; first record kept",
+        "action": "Removed duplicate",
+        "severity": "info"
+      }
+    ],
+    "auditMeta": {
+      "total": 8,
+      "returned": 8,
+      "truncated": false,
+      "valueCharacterLimit": 300
+    },
+    "issuesMeta": {
+      "total": 1,
+      "returned": 1,
+      "truncated": false
+    }
+  }
+}

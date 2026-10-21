@@ -1,0 +1,13 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "tidysheet-python",
+  "main": "index.ts",
+  "account_id": "8aaed373272b27df5f2869c3d0d28595",
+  "compatibility_date": "2026-10-21",
+  "workers_dev": true,
+  "preview_urls": false,
+  "containers": [{"class_name":"PythonCleaner","image":"../Dockerfile","image_build_context":"..","instance_type":"basic","max_instances":2}],
+  "durable_objects":{"bindings":[{"name":"PYTHON_CLEANER","class_name":"PythonCleaner"}]},
+  "migrations":[{"tag":"v1","new_sqlite_classes":["PythonCleaner"]}],
+  "observability":{"enabled":false}
+}
