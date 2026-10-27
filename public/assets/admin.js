@@ -1,6 +1,6 @@
 'use strict';
 (async () => {
-  const { filterActivity, trafficCSV, activityLabels } = await import('./admin-data.mjs?v=4.6.0');
+  const { filterActivity, trafficCSV, activityLabels, metricInfo, metricTable } = await import('./admin-data.mjs?v=4.10.0');
   const $ = id => document.getElementById(id);
   if (!$('adminRange')) return;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -8,6 +8,67 @@
   const fmt = value => number(value).toLocaleString();
   let controller, generation = 0, snapshot = null, busy = false, selectedDay = 0, geometry;
   const series = { visitors: true, pageViews: true };
+
+  const metricDialog = $('adminMetricDialog');
+  let detailState = null, detailController, detailGeneration = 0;
+  async function loadDetails(page = 1) {
+    if (!detailState || !metricDialog.open) return;
+    const id = ++detailGeneration;
+    detailController?.abort(); detailController = new AbortController();
+    detailState.page = page;
+    $('adminMetricBody').setAttribute('aria-busy', 'true');
+    $('adminMetricTableWrap').hidden = true; $('adminMetricError').hidden = true; $('adminMetricRetry').hidden = true;
+    $('adminMetricStatus').textContent = 'Loading report details…'; $('adminMetricCount').textContent = '';
+    $('adminMetricPrev').disabled = true; $('adminMetricNext').disabled = true;
+    try {
+      const query = new URLSearchParams({ metric: detailState.metric, days: String(detailState.days), at: String(detailState.at), page: String(page) });
+      const response = await fetch('/api/admin/metrics?' + query, { signal: detailController.signal, cache: 'no-store', credentials: 'same-origin' });
+      const data = await response.json();
+      if (!response.ok) throw Error(data.message || 'Could not load report details.');
+      if (id !== detailGeneration || !metricDialog.open) return;
+      const report = metricTable(data);
+      $('adminMetricValue').textContent = fmt(data.value);
+      $('adminMetricTable').innerHTML = table(report.headers, report.rows.map(row => row.map(esc)), 'No matching records in this period.');
+      $('adminMetricTableWrap').hidden = !data.items.length;
+      $('adminMetricStatus').textContent = data.items.length ? '' : 'No matching records in this period. Choose another reporting period to explore more activity.';
+      $('adminMetricCount').textContent = data.total ? fmt((data.page - 1) * data.pageSize + 1) + '–' + fmt(Math.min(data.page * data.pageSize, data.total)) + ' of ' + fmt(data.total) + (data.metric === 'pageViews' ? ' pages' : ' records') : '0 records';
+      $('adminMetricPrev').disabled = data.page <= 1;
+      $('adminMetricNext').disabled = data.page >= data.pages;
+    } catch (error) {
+      if (id !== detailGeneration || error.name === 'AbortError') return;
+      $('adminMetricStatus').textContent = '';
+      $('adminMetricError').textContent = error.message + ' Close this window and refresh the overview if your session or report has expired.';
+      $('adminMetricError').hidden = false; $('adminMetricRetry').hidden = false;
+    } finally {
+      if (id === detailGeneration) $('adminMetricBody').setAttribute('aria-busy', 'false');
+    }
+  }
+  $('adminMetrics').addEventListener('click', event => {
+    const button = event.target.closest('[data-admin-metric]');
+    if (!button || !snapshot || busy || !metricInfo[button.dataset.adminMetric]) return;
+    const metric = button.dataset.adminMetric, info = metricInfo[metric];
+    detailState = { metric, days: snapshot.days, at: snapshot.generatedAt, page: 1 };
+    $('adminMetricTitle').textContent = info.label;
+    $('adminMetricDescription').textContent = info.description;
+    $('adminMetricValue').textContent = button.querySelector('strong').textContent;
+    $('adminMetricPeriod').textContent = snapshot.days + ' days · ' + new Date(snapshot.since).toISOString().slice(0,10) + ' — ' + new Date(snapshot.until - 1).toISOString().slice(0,10) + ' UTC';
+    document.body.classList.add('admin-modal-open'); metricDialog.showModal(); loadDetails();
+  });
+  for (const id of ['adminMetricClose', 'adminMetricDone']) $(id).addEventListener('click', () => metricDialog.close());
+  metricDialog.addEventListener('click', event => {
+    if (event.target !== metricDialog) return;
+    const bounds = metricDialog.getBoundingClientRect();
+    if (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom) metricDialog.close();
+  });
+  metricDialog.addEventListener('close', () => {
+    detailGeneration++; detailController?.abort(); document.body.classList.remove('admin-modal-open');
+    const metric = detailState?.metric; detailState = null;
+    if (metric) document.querySelector('[data-admin-metric="' + metric + '"]')?.focus();
+  });
+  $('adminMetricPrev').addEventListener('click', () => loadDetails(detailState.page - 1));
+  $('adminMetricNext').addEventListener('click', () => loadDetails(detailState.page + 1));
+  $('adminMetricRetry').addEventListener('click', () => loadDetails(detailState.page));
+
   function table(headers, rows, empty) {
     return '<thead><tr>' + headers.map(h => '<th scope="col">' + esc(h) + '</th>').join('') + '</tr></thead><tbody>' + (rows.length ? rows.map(row => '<tr>' + row.map((v, i) => '<' + (i ? 'td' : 'th scope="row"') + '>' + v + '</' + (i ? 'td' : 'th') + '>').join('') + '</tr>').join('') : '<tr><td colspan="' + headers.length + '" class="muted">' + esc(empty) + '</td></tr>') + '</tbody>';
   }
@@ -80,16 +141,16 @@
     const attempts = data.operations.filter(row => row.kind === 'clean' && !row.sample && row.outcome !== 'cancelled').reduce((n, row) => n + number(row.count), 0);
     const failed = data.operations.filter(row => !row.sample && row.outcome === 'failure').reduce((n, row) => n + number(row.count), 0);
     const metrics = [
-      ['Unique visitors', data.traffic.visitors, 'Distinct browsers in this period', '↗', 'accent'],
-      ['Page views', data.traffic.pageViews, 'Across tracked application pages', '▧', ''],
-      ['Successful cleanings', count('clean'), attempts ? Math.round(count('clean') / attempts * 100) + '% of non-cancelled cleaning attempts' : 'No completed attempts yet', '✓', ''],
-      ['Failed operations', failed, 'Own-file imports, cleanings & exports', '!', failed ? 'alert' : ''],
-      ['New accounts', data.accounts.newAccounts, fmt(data.accounts.total) + ' accounts in total', '+', ''],
-      ['Active accounts', data.traffic.activeAccounts, 'With activity in this period', '◎', ''],
-      ['Files imported', count('import'), 'Own files read on a device', '↑', ''],
-      ['Exports prepared', count('export'), 'Own-file exports prepared', '↓', '']
+      ['visitors', 'Unique visitors', data.traffic.visitors, 'Distinct browsers in this period', '↗', 'accent'],
+      ['pageViews', 'Page views', data.traffic.pageViews, 'Across tracked application pages', '▧', ''],
+      ['cleanings', 'Successful cleanings', count('clean'), attempts ? Math.round(count('clean') / attempts * 100) + '% of non-cancelled cleaning attempts' : 'No completed attempts yet', '✓', ''],
+      ['failures', 'Failed operations', failed, 'Own-file imports, cleanings & exports', '!', failed ? 'alert' : ''],
+      ['newAccounts', 'New accounts', data.accounts.newAccounts, fmt(data.accounts.total) + ' accounts in total', '+', ''],
+      ['activeAccounts', 'Active accounts', data.traffic.activeAccounts, 'With activity in this period', '◎', ''],
+      ['imports', 'Files imported', count('import'), 'Own files read on a device', '↑', ''],
+      ['exports', 'Exports prepared', count('export'), 'Own-file exports prepared', '↓', '']
     ];
-    $('adminMetrics').innerHTML = metrics.map(([label, value, note, symbol, tone]) => '<article class="admin-metric" data-tone="' + tone + '"><div class="metric-title">' + esc(label) + '<span class="metric-symbol" aria-hidden="true">' + symbol + '</span></div><strong>' + fmt(value) + '</strong><small>' + esc(note) + '</small></article>').join('');
+    $('adminMetrics').innerHTML = metrics.map(([key, label, value, note, symbol, tone]) => '<button type="button" class="admin-metric admin-metric-button" data-admin-metric="' + key + '" data-tone="' + tone + '" aria-haspopup="dialog" aria-controls="adminMetricDialog" title="Open ' + esc(label) + ' details"><span class="metric-title">' + esc(label) + '<span class="metric-symbol" aria-hidden="true">' + symbol + '</span></span><strong>' + fmt(value) + '</strong><small>' + esc(note) + '</small><span class="metric-open">View details <span aria-hidden="true">↗</span></span></button>').join('');
     $('adminMetrics').setAttribute('aria-busy', 'false');
     renderChart();
     $('adminDaily').innerHTML = table(['Date (UTC)', 'Visitors', 'Page views', 'Own-file cleanings'], data.trends.map(row => [esc(row.date), fmt(row.visitors), fmt(row.pageViews), fmt(row.cleanings)]), 'No traffic recorded.');
@@ -109,7 +170,7 @@
     const id = ++generation;
     controller?.abort(); controller = new AbortController(); busy = true;
     document.querySelector('[data-admin-overview]').setAttribute('aria-busy', 'true');
-    $('adminRefresh').disabled = true; $('adminTrafficExport').disabled = true; $('adminMessage').hidden = true;
+    $('adminRefresh').disabled = true; document.querySelectorAll('[data-admin-metric]').forEach(button => button.disabled = true); $('adminTrafficExport').disabled = true; $('adminMessage').hidden = true;
     $('adminLiveState').textContent = 'Refreshing';
     $('adminLiveState').dataset.state = 'loading';
     const days = $('adminRange').value;
@@ -129,7 +190,7 @@
       }
     } finally {
       if (id === generation) {
-        busy = false; $('adminRefresh').disabled = false; $('adminTrafficExport').disabled = !snapshot;
+        busy = false; document.querySelectorAll('[data-admin-metric]').forEach(button => button.disabled = false); $('adminRefresh').disabled = false; $('adminTrafficExport').disabled = !snapshot;
         document.querySelector('[data-admin-overview]').setAttribute('aria-busy', 'false');
       }
     }
@@ -147,7 +208,7 @@
     const a = document.createElement('a'); a.href = url; a.download = 'tidysheet-daily-traffic-' + snapshot.days + '-days.csv'; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   });
-  const interval = setInterval(() => { if ($('adminAutoRefresh').checked && !document.hidden && !busy) load(); }, 60000);
-  window.addEventListener('pagehide', () => { clearInterval(interval); controller?.abort(); }, { once: true });
+  const interval = setInterval(() => { if ($('adminAutoRefresh').checked && !document.hidden && !busy && !metricDialog.open) load(); }, 60000);
+  window.addEventListener('pagehide', () => { clearInterval(interval); controller?.abort(); detailController?.abort(); }, { once: true });
   load();
 })();

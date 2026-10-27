@@ -1,5 +1,5 @@
 import {currentUser,isAdmin,requireAdmin,claimAdmin,issueAdminInvitation,inspectAdminInvitation,inspectAdminSetup,completeAdminSetup,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
-import {telemetry,authEvent,dashboard} from './analytics';
+import {telemetry,authEvent,dashboard,metricDetails} from './analytics';
 import {submitReview,reviewInbox,updateReview} from './reviews';
 import {accountFor,subscriptionFor,first,all,run} from './store';
 import {AppError,sameOrigin,subscriptionAccess,publicSubscription,PLAN_CHOICES} from './policy.mjs';
@@ -50,6 +50,7 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='GET'&&path==='/api/admin/reviews'){await requireAdmin(request);return json(await reviewInbox(url.searchParams));}
     if(request.method==='POST'&&path==='/api/admin/reviews/status'){await requireAdmin(request);return json(await updateReview(await readJSON(request)));}
     if(request.method==='POST'&&path==='/api/admin/claim')return json(await claimAdmin(request,await readJSON(request)));
+    if(request.method==='GET'&&path==='/api/admin/metrics'){await requireAdmin(request);return json(await metricDetails(url.searchParams));}
     if(request.method==='GET'&&path==='/api/admin/overview'){await requireAdmin(request);return json(await dashboard(Number(url.searchParams.get('days')||30)));}
     if(request.method==='POST'&&path==='/api/telemetry'){const result=await telemetry(request,await readJSON(request),await currentUser(request)),response=json({recorded:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
 

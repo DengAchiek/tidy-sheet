@@ -315,3 +315,46 @@ test('Review pages are discoverable, preserve the sign-in destination and never 
  const clientPage=await (await h.route(req('/reviews',undefined,cookie))).text();assert.match(clientPage,/id="clientReviewForm"/);assert.match(clientPage,/name="rating"/);assert.match(clientPage,/maxlength="2000"/);assert.doesNotMatch(clientPage,new RegExp(privateComment));assert.match(h.render.authPage('login','/reviews'),/data-auth-return="\/reviews"/);
  assert.match(await (await h.route(req('/'))).text(),/href="\/reviews">Leave a review/);await grantAdmin(h,cookie);assert.match(await (await h.route(req('/admin',undefined,cookie))).text(),/href="\/admin\/reviews"/);
 });
+
+test('Overview card details require current admin membership and reject invalid report parameters',async()=>{
+ const h=harness(),{cookie}=await signup(h),path='/api/admin/metrics?metric=newAccounts&days=7';
+ assert.equal((await h.route(req(path))).status,401);
+ assert.equal((await h.route(req(path,undefined,cookie))).status,403);
+ await grantAdmin(h,cookie);
+ const response=await h.route(req(path,undefined,cookie));assert.equal(response.status,200);assert.match(response.headers.get('Cache-Control'),/no-store/);
+ const data=await response.json();assert.equal(data.value,1);assert.equal(data.items[0].email,fixture.email);assert.equal('password_hash' in data.items[0],false);
+ for(const query of ['metric=unknown','metric=cleanings&days=365','metric=imports&page=0','metric=exports&page=1.5','metric=exports&page=10001','metric=visitors&at=0','metric=visitors&at='+String(Date.now()+120000)])assert.equal((await h.route(req('/api/admin/metrics?'+query,undefined,cookie))).status,400,query);
+ await h.store.run('DELETE FROM administrators');assert.equal((await h.route(req(path,undefined,cookie))).status,403);
+});
+
+test('All eight card reports match overview totals, UTC periods and sample/outcome definitions',async()=>{
+ const h=harness(),{cookie}=await signup(h),user=await grantAdmin(h,cookie),at=Date.now(),old=at-35*86400000;
+ await h.store.run('INSERT INTO accounts (id,email,name,created_at,trial_ends) VALUES (?,?,?,?,0)','older-client','older@example.com','Older client',old);
+ const v1=nodeCrypto.randomUUID(),v2=nodeCrypto.randomUUID();
+ const seed=async(kind,outcome='success',sample=0,path='/',visitor=v1,id=user.userId,time=at-1)=>h.store.run('INSERT INTO site_events (id,visitor_id,user_id,kind,path,sample,outcome,duration_ms,row_count,column_count,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)',nodeCrypto.randomUUID(),visitor,id,kind,path,sample,outcome,200,12,3,time);
+ await seed('page_view');await seed('page_view','success',0,'/reviews');await seed('page_view','success',0,'/',v2,'older-client');
+ for(const kind of ['import','clean','export']){await seed(kind);await seed(kind,'failure');await seed(kind,'success',1);await seed(kind,'cancelled');}
+ await seed('page_view','success',0,'/training',v2,'older-client',old);
+ const overview=await h.analytics.dashboard(7),operations=kind=>overview.operations.find(r=>r.kind===kind&&!r.sample&&r.outcome==='success')?.count||0;
+ const expected={visitors:overview.traffic.visitors,pageViews:overview.traffic.pageViews,cleanings:operations('clean'),failures:3,newAccounts:overview.accounts.newAccounts,activeAccounts:overview.traffic.activeAccounts,imports:operations('import'),exports:operations('export')};
+ for(const [metric,value] of Object.entries(expected)){
+   const response=await h.route(req('/api/admin/metrics?metric='+metric+'&days=7',undefined,cookie));assert.equal(response.status,200,metric);const report=await response.json();assert.equal(report.value,value,metric);assert.equal(report.since,overview.since);assert.ok(report.items.length>0,metric);
+   if(metric==='visitors'){assert.equal(report.total,2);assert.equal(report.items.reduce((n,r)=>n+r.pageViews,0),3);assert.ok(report.items.every(r=>!('visitor_id' in r)&&!('user_id' in r)));}
+   if(metric==='pageViews'){assert.equal(report.items.reduce((n,r)=>n+r.views,0),3);assert.equal(report.total,2);}
+   if(['cleanings','imports','exports'].includes(metric))assert.ok(report.items.every(r=>r.outcome==='success'&&r.rows===12));
+   if(metric==='failures')assert.ok(report.items.every(r=>r.outcome==='failure'));
+ }
+ const wide=await h.analytics.metricDetails(new URLSearchParams('metric=newAccounts&days=90'));assert.equal(wide.value,2);
+ const empty=await h.analytics.metricDetails(new URLSearchParams('metric=cleanings&days=7&at='+String(at-3600000)));assert.equal(empty.value,0);assert.deepEqual(Array.from(empty.items),[]);assert.equal(empty.pages,1);
+});
+
+test('Card details paginate beyond recent activity and keep a stable report timestamp',async()=>{
+ const h=harness(),{cookie}=await signup(h),user=await grantAdmin(h,cookie),at=Date.now();
+ for(let i=0;i<52;i++)await h.store.run("INSERT INTO site_events (id,user_id,kind,path,sample,outcome,row_count,column_count,created_at) VALUES (?,?,'clean','/sheet-cleaner.html',0,'success',?,2,?)",nodeCrypto.randomUUID(),user.userId,i+1,at-100);
+ const first=await h.analytics.metricDetails(new URLSearchParams('metric=cleanings&days=7&at='+at));assert.equal(first.total,52);assert.equal(first.items.length,25);assert.equal(first.pages,3);
+ await h.store.run("INSERT INTO site_events (id,user_id,kind,path,sample,outcome,row_count,column_count,created_at) VALUES (?,?,'clean','/sheet-cleaner.html',0,'success',999,2,?)",nodeCrypto.randomUUID(),user.userId,at+10);
+ const values=first.items.map(r=>r.rows);
+ for(const page of [2,3]){const next=await h.analytics.metricDetails(new URLSearchParams('metric=cleanings&days=7&at='+first.at+'&page='+page));assert.equal(next.total,52);values.push(...next.items.map(r=>r.rows));}
+ assert.equal(values.length,52);assert.equal(new Set(values).size,52);assert.ok(!values.includes(999));
+ assert.equal((await h.analytics.dashboard(7)).recent.length,40);
+});

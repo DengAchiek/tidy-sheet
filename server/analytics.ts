@@ -35,3 +35,46 @@ export async function dashboard(days:number){
   const byDate=new Map(trends.map(r=>[r.date,r]));
   return {days,since,until,generatedAt:Date.now(),traffic,operations,accounts,trends:Array.from({length:days},(_,i)=>{const date=new Date(since+i*86400000).toISOString().slice(0,10);return byDate.get(date)||{date,visitors:0,pageViews:0,cleanings:0};}),pages,recent};
 }
+
+
+// Read-only drill-downs use the same UTC periods and event definitions as the cards.
+// The report timestamp anchors pagination while new activity continues to arrive.
+export async function metricDetails(params:URLSearchParams){
+  const metric=params.get('metric')||'',days=Number(params.get('days')||30),now=Date.now();
+  const at=Number(params.get('at')||now),pageText=params.get('page')||'1',page=Number(pageText),pageSize=25;
+  if(!['visitors','pageViews','cleanings','failures','newAccounts','activeAccounts','imports','exports'].includes(metric))throw new AppError(400,'invalid_metric','Choose an application overview card.');
+  if(![7,30,90].includes(days))throw new AppError(400,'invalid_range','Choose 7, 30 or 90 days.');
+  if(!Number.isSafeInteger(at)||at<now-86400000||at>now+60000)throw new AppError(400,'expired_report','Refresh the overview to open a current report.');
+  if(!/^\d{1,5}$/.test(pageText)||page<1||page>10000)throw new AppError(400,'invalid_page','Choose a valid report page.');
+  const today=new Date(at);today.setUTCHours(0,0,0,0);
+  const since=today.getTime()-(days-1)*86400000,until=Math.min(today.getTime()+86400000,at+1),offset=(page-1)*pageSize;
+  let total=0,value=0,items:any[]=[];
+  if(metric==='visitors'){
+    const where="kind='page_view' AND visitor_id IS NOT NULL AND created_at>=? AND created_at<?";
+    const count=await first('SELECT count(DISTINCT visitor_id) AS total FROM site_events WHERE '+where,since,until);
+    total=value=Number(count?.total||0);
+    items=await all('SELECT min(created_at) AS firstSeen,max(created_at) AS lastSeen,count(*) AS pageViews,count(DISTINCT path) AS pages FROM site_events WHERE '+where+' GROUP BY visitor_id ORDER BY lastSeen DESC,visitor_id DESC LIMIT ? OFFSET ?',since,until,pageSize,offset);
+    items=items.map((row,i)=>({...row,browser:offset+i+1}));
+  }else if(metric==='pageViews'){
+    const where="kind='page_view' AND created_at>=? AND created_at<?";
+    const count=await first('SELECT count(*) AS value,count(DISTINCT path) AS total FROM site_events WHERE '+where,since,until);
+    total=Number(count?.total||0);value=Number(count?.value||0);
+    items=await all('SELECT path,count(*) AS views,count(DISTINCT visitor_id) AS visitors,max(created_at) AS lastSeen FROM site_events WHERE '+where+' GROUP BY path ORDER BY views DESC,path ASC LIMIT ? OFFSET ?',since,until,pageSize,offset);
+  }else if(metric==='newAccounts'){
+    const count=await first('SELECT count(*) AS total FROM accounts WHERE created_at>=? AND created_at<?',since,until);
+    total=value=Number(count?.total||0);
+    items=await all('SELECT name,email,created_at AS createdAt FROM accounts WHERE created_at>=? AND created_at<? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?',since,until,pageSize,offset);
+  }else if(metric==='activeAccounts'){
+    const where='e.user_id IS NOT NULL AND e.created_at>=? AND e.created_at<?';
+    const count=await first('SELECT count(DISTINCT e.user_id) AS total FROM site_events e WHERE '+where,since,until);
+    total=value=Number(count?.total||0);
+    items=await all('SELECT a.name,a.email,count(*) AS events,max(e.created_at) AS lastSeen FROM site_events e LEFT JOIN accounts a ON a.id=e.user_id WHERE '+where+' GROUP BY e.user_id ORDER BY lastSeen DESC,e.user_id DESC LIMIT ? OFFSET ?',since,until,pageSize,offset);
+  }else{
+    const filter=metric==='failures'?"e.kind IN ('import','clean','export') AND e.outcome='failure'":("e.kind='"+({cleanings:'clean',imports:'import',exports:'export'}[metric])+"' AND e.outcome='success'");
+    const where='e.sample=0 AND '+filter+' AND e.created_at>=? AND e.created_at<?';
+    const count=await first('SELECT count(*) AS total FROM site_events e WHERE '+where,since,until);
+    total=value=Number(count?.total||0);
+    items=await all('SELECT e.kind,e.path,e.outcome,e.duration_ms AS durationMs,e.row_count AS rows,e.column_count AS columns,e.created_at AS createdAt,a.name,a.email FROM site_events e LEFT JOIN accounts a ON a.id=e.user_id WHERE '+where+' ORDER BY e.created_at DESC,e.id DESC LIMIT ? OFFSET ?',since,until,pageSize,offset);
+  }
+  return {metric,days,since,until,at,page,pageSize,total,value,items,pages:Math.max(1,Math.ceil(total/pageSize))};
+}
