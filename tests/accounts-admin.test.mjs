@@ -404,7 +404,7 @@ test('Granted administrators retain access, with private cache headers and a bou
 test('Entering a sample rotates an admin into a restricted server session until password sign-in',async()=>{
  const h=harness(),{cookie}=await signup(h);await grantAdmin(h,cookie);
  assert.equal((await h.route(req('/admin',undefined,cookie))).status,200);
- const response=await h.route(req('/choose?sample=1',undefined,cookie));assert.equal(response.status,200);assert.match(await response.text(),/Sample session: administrator access is disabled/);
+ const response=await h.route(req('/choose?sample=1',undefined,cookie));assert.equal(response.status,200);assert.doesNotMatch(await response.text(),/Sample session:|administrator access is disabled|to use an assigned admin account/);
  const sample=response.headers.get('set-cookie').split(';')[0];assert.match(sample,/^__Host-tidysheet=sample\.[a-f0-9]{64}$/);
  const session=await (await h.route(req('/api/session',undefined,sample))).json();assert.equal(session.user.sampleOnly,true);assert.equal(session.user.authSource,'password');assert.equal(session.admin,false);
  for(const path of ['/admin','/admin/reviews','/api/admin/overview','/api/admin/metrics?metric=visitors','/api/admin/reviews'])assert.equal((await h.route(req(path,undefined,sample))).status,403,path);
