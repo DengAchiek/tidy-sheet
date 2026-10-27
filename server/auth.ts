@@ -1,11 +1,11 @@
 import {scrypt,randomBytes,timingSafeEqual,createHash} from 'node:crypto';
 import {getChatGPTUser} from '../app/chatgpt-auth';
-import {database,first,run} from './store';
+import {accountFor,database,first,run} from './store';
 import {AppError} from './policy.mjs';
 import {env,waitUntil} from 'cloudflare:workers';
 import {requireRecoveryEmail,sendRecoveryEmail} from './recovery-email';
 
-export type User={userId:string,email:string,displayName:string,fullName:string|null,authSource?:'password'|'chatgpt'};
+export type User={userId:string,email:string,displayName:string,fullName:string|null,authSource?:'password'|'chatgpt',sampleOnly?:boolean};
 const AGE=7*86400000;
 export const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 export function cookie(request:Request,name:string){return request.headers.get('cookie')?.split(';').map(s=>s.trim()).find(s=>s.startsWith(name+'='))?.slice(name.length+1)||'';}
@@ -13,15 +13,18 @@ function sessionName(request:Request){return new URL(request.url).protocol==='ht
 export function sessionCookie(request:Request,token:string,age=AGE/1000){return sessionName(request)+'='+token+'; Path=/; HttpOnly; SameSite=Lax; Max-Age='+age+(new URL(request.url).protocol==='https:'?'; Secure':'');}
 export async function currentUser(request:Request):Promise<User|null>{
   const token=cookie(request,sessionName(request));
-  if(/^[a-f0-9]{64}$/.test(token)){
-    const row=await first('SELECT a.id,a.email,a.name FROM auth_sessions s JOIN accounts a ON a.id=s.user_id WHERE s.token_hash=? AND s.expires_at>?',digest(token),Date.now());
-    if(row)return {userId:row.id,email:row.email,displayName:row.name,fullName:row.name,authSource:'password'};
+  // A supplied application session chooses one identity. Never fall back to a
+  // different native identity when that session is expired, revoked or malformed.
+  if(token){
+    if(!/^(?:sample\.)?[a-f0-9]{64}$/.test(token))return null;
+    const row=await first('SELECT a.id,a.email,a.name,c.user_id AS password_user_id FROM auth_sessions s JOIN accounts a ON a.id=s.user_id LEFT JOIN auth_credentials c ON c.user_id=a.id WHERE s.token_hash=? AND s.expires_at>?',digest(token),Date.now());
+    return row?{userId:row.id,email:row.email,displayName:row.name,fullName:row.name,authSource:row.password_user_id?'password':'chatgpt',sampleOnly:token.startsWith('sample.')}:null;
   }
   const native=await getChatGPTUser();return native?{...native,authSource:'chatgpt'}:null;
 }
 // Email is a login identifier, not proof of ownership. It never grants an admin role.
-export async function isAdmin(user:User|null){return !!user&&!!await first('SELECT user_id FROM administrators WHERE user_id=?',user.userId);}
-export async function requireAdmin(request:Request){const user=await currentUser(request);if(!user)throw new AppError(401,'sign_in_required','Sign in to continue.');if(!await isAdmin(user))throw new AppError(403,'admin_required','Administrator access is required.');return user;}
+export async function isAdmin(user:User|null){return !!user&&!user.sampleOnly&&!!await first('SELECT user_id FROM administrators WHERE user_id=?',user.userId);}
+export async function requireAdmin(request:Request){const user=await currentUser(request);if(!user)throw new AppError(401,'sign_in_required','Sign in to continue.');if(new URL(request.url).searchParams.get('sample')==='1'||!await isAdmin(user))throw new AppError(403,'admin_required','Administrator access is required.');return user;}
 export async function claimAdmin(request:Request,body:any){
   const user=await currentUser(request);if(!user)throw new AppError(401,'sign_in_required','Sign in before activating administrator access.');
   await rateLimit(request,'admin-claim',user.userId,5);
@@ -101,12 +104,19 @@ export async function rateLimit(request:Request,scope:string,identifier:string,m
   for(const key of keys){const result=await first('INSERT INTO auth_rate_limits (key,attempts,expires_at) VALUES (?,1,?) ON CONFLICT(key) DO UPDATE SET attempts=attempts+1 RETURNING attempts',key,(window+1)*900000);if(result.attempts>(key.includes(':network:')?max*5:max))throw new AppError(429,'too_many_attempts','Too many attempts. Please try again in 15 minutes.');}
   await run('DELETE FROM auth_rate_limits WHERE key IN (SELECT key FROM auth_rate_limits WHERE expires_at<? LIMIT 100)',now);
 }
-async function newSession(request:Request,userId:string){
-  const token=randomBytes(32).toString('hex'),now=Date.now();
+async function newSession(request:Request,userId:string,sampleOnly=false){
+  // Hash the scope together with the secret: removing or adding the prefix
+  // cannot turn a restricted session into an administrator session.
+  const token=(sampleOnly?'sample.':'')+randomBytes(32).toString('hex'),now=Date.now();
   await run('DELETE FROM auth_sessions WHERE expires_at<?',now);
   const previous=cookie(request,sessionName(request));if(previous)await run('DELETE FROM auth_sessions WHERE token_hash=?',digest(previous));
   await run('INSERT INTO auth_sessions (token_hash,user_id,expires_at,created_at) VALUES (?,?,?,?)',digest(token),userId,now+AGE,now);
   return sessionCookie(request,token);
+}
+export async function enterSample(request:Request,user:User){
+  if(user.sampleOnly)return null;
+  await accountFor(user);
+  return newSession(request,user.userId,true);
 }
 export async function register(request:Request,body:any){
   const email=normalizeEmail(body.email),secret=password(body.password),name=typeof body.name==='string'?body.name.trim():'';
@@ -199,3 +209,18 @@ export async function changePassword(request:Request,body:any){
   return {setCookie:sessionCookie(request,token)};
 }
 export async function logout(request:Request){const token=cookie(request,sessionName(request));if(token)await run('DELETE FROM auth_sessions WHERE token_hash=?',digest(token));return sessionCookie(request,'',0);}
+
+
+export async function hasNativeSession(){return Boolean(await getChatGPTUser());}
+export async function beginNativeSignIn(request:Request){
+  if(env.TIDYSHEET_IDENTITY_MODE==='disabled')throw new AppError(404,'native_signin_unavailable','Use your email and password to sign in on this deployment.');
+  let destination='/choose';
+  try{
+    const target=new URL(new URL(request.url).searchParams.get('return_to')||'/choose','https://app.local');
+    if(target.origin==='https://app.local'){
+      if(['/cleaner','/sheet-cleaner.html','/training','/choose'].includes(target.pathname))destination='/choose'+(target.searchParams.get('sample')==='1'?'?sample=1':'');
+      else if(['/account','/account/security','/admin','/admin/reviews','/reviews'].includes(target.pathname))destination=target.pathname;
+    }
+  }catch{}
+  return {setCookie:await logout(request),location:'/signin-with-chatgpt?return_to='+encodeURIComponent(destination)};
+}

@@ -1,22 +1,26 @@
 'use strict';
 (()=>{
-  let user=null;
+  let user=null,authChannel=null;
+  try{authChannel=new BroadcastChannel('tidysheet-auth');window.TidyAuthChannel=authChannel;}catch{}
   const returnTo=document.querySelector('[data-auth-return]')?.dataset.authReturn||'/choose';
   const request=async(path,body)=>{
     const response=await fetch(path,{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const data=await response.json();
     if(!response.ok){const error=Error(data.message||'Please try again shortly.');error.code=data.error;throw error;}
+    if(['/api/auth/register','/api/auth/login','/api/auth/logout','/api/auth/sample','/api/auth/password','/api/auth/password-reset','/api/admin/setup','/api/admin/claim'].includes(path)){window.TidyAdminAccess?.lock();try{authChannel?.postMessage('changed');}catch{}}
     return data;
   };
   async function session(){
     const response=await fetch('/api/session',{cache:'no-store',credentials:'same-origin'});
     if(!response.ok)throw Error('Accounts are temporarily unavailable. Please try again.');
     const data=await response.json();user=data.user;
+    if(user?.sampleOnly){try{authChannel?.postMessage('changed');}catch{}}
     if(user){
       const link=document.querySelector('.nav-links a[href="/login"]');
       if(link){link.href='/account';link.textContent='My account';}
       if(data.admin&&!document.querySelector('.nav-links a[href="/admin"]')){const a=document.createElement('a');a.href='/admin';a.textContent='Dashboard';document.querySelector('.nav-links')?.prepend(a);}
     }
+    if(!data.admin)document.querySelectorAll('.nav-links a[href="/admin"],.account-heading a[href="/admin"]').forEach(link=>link.remove());
     return data;
   }
   function complete(){location.assign(returnTo);}
@@ -89,7 +93,7 @@
       }finally{lock(false);}
     };
   }
-  window.TidyAccess={async ensure(){const data=await session();if(data.user)return data.user;location.assign('/login?returnTo=%2Fchoose');return null;},session};
+  window.TidyAccess={async ensure(){const data=await session();if(data.user)return data.user;location.assign('/login?returnTo=%2Fchoose');return null;},async enterSample(){await request('/api/auth/sample',{});return session();},session};
   document.querySelectorAll('[data-signout]').forEach(b=>b.onclick=async e=>{e.preventDefault();b.disabled=true;try{const data=await request('/api/auth/logout',{});location.assign(data.nativeSignOut||'/choose');}catch(error){b.disabled=false;const p=document.createElement('p');p.setAttribute('role','alert');p.textContent=error.message;b.after(p);}});
   const claim=document.getElementById('adminClaimForm');
   if(claim)claim.onsubmit=async e=>{e.preventDefault();const button=claim.querySelector('button'),notice=document.getElementById('adminClaimMessage');button.disabled=true;notice.hidden=true;try{await request('/api/admin/claim',{code:claim.elements.code.value});claim.elements.code.value='';location.assign('/admin');}catch(error){notice.textContent=error.message;notice.hidden=false;}finally{button.disabled=false;}};
@@ -147,4 +151,5 @@
     };
   }
   if(location.pathname==='/account')session().then(data=>{if(data.admin){const a=document.createElement('a');a.className='btn secondary';a.href='/admin';a.textContent='Admin dashboard ↗';document.querySelector('.account-heading')?.append(a);}}).catch(()=>{});
+  else if(document.querySelector('.workspace-choice')||new URLSearchParams(location.search).get('sample')==='1')session().catch(()=>{});
 })();

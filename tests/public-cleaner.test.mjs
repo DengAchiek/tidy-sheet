@@ -14,7 +14,7 @@ function app(user=null) {
   const billing={billingMode:()=> 'live',getPlans:unavailable};
   const templates=Object.fromEntries(['landing','cleaner','training','privacy'].map(name=>['./templates/'+name+'.html?raw',fs.readFileSync(new URL('../server/templates/'+name+'.html',import.meta.url),'utf8')]));
   const render=compile('../server/render.ts',{...templates,'cloudflare:workers':{env:{}},'./billing':billing,'./recovery-email':{recoveryEmailReady:()=>false}});
-  const route=compile('../server/router.ts',{'./reviews':{},'./auth':{currentUser:async()=>user},'./analytics':{},'./store':{accountFor:unavailable,subscriptionFor:unavailable,first:unavailable,all:unavailable,run:unavailable},'./policy.mjs':policy,'./billing':billing,'./render':render}).handleRequest;
+  const route=compile('../server/router.ts',{'./reviews':{},'./auth':{currentUser:async()=>user,enterSample:async()=>null},'./analytics':{},'./store':{accountFor:unavailable,subscriptionFor:unavailable,first:unavailable,all:unavailable,run:unavailable},'./policy.mjs':policy,'./billing':billing,'./render':render}).handleRequest;
   return {route,render};
 }
 const get=(route,path)=>route(new Request('https://example.com'+path));

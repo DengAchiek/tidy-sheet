@@ -358,3 +358,79 @@ test('Card details paginate beyond recent activity and keep a stable report time
  assert.equal(values.length,52);assert.equal(new Set(values).size,52);assert.ok(!values.includes(999));
  assert.equal((await h.analytics.dashboard(7)).recent.length,40);
 });
+
+test('Regular and sample users are denied throughout the admin namespace, including guessed routes and flags',async()=>{
+ const h=harness(),{cookie}=await signup(h,{role:'admin',admin:true}),other=await signup(h,{email:'other-regular@example.com'});
+ const pages=['/admin','/admin?sample=1&admin=true','/admin/reviews','/admin/unknown'];
+ for(const token of [cookie,other.cookie]){
+   for(const path of pages){const response=await h.route(req(path,undefined,token));assert.equal(response.status,403,path);const html=await response.text();assert.match(html,/Administrator access only/);assert.doesNotMatch(html,/id="adminClaimForm"|data-admin-overview|data-admin-reviews|id="adminMetrics"/);}
+   for(const path of ['/api/admin/overview?sample=1','/api/admin/metrics?metric=visitors&days=7','/api/admin/reviews','/api/admin/unknown'])assert.equal((await h.route(req(path,undefined,token))).status,403,path);
+   assert.equal((await h.route(req('/api/admin/reviews/status',{id:nodeCrypto.randomUUID(),status:'reviewed'},token))).status,403);
+   assert.equal((await h.route(req('/sheet-cleaner.html?purpose=business&sample=1',undefined,token))).status,200);
+ }
+ assert.equal((await h.store.all('SELECT * FROM administrators')).length,0);
+ for(const path of pages)assert.equal((await h.route(req(path))).status,303,path);
+ for(const path of ['/api/admin/overview','/api/admin/metrics?metric=newAccounts','/api/admin/reviews','/api/admin/unknown'])assert.equal((await h.route(req(path))).status,401,path);
+});
+
+test('Expired, revoked and malformed password sessions cannot fall back to a different native administrator',async()=>{
+ const h=harness(),{cookie}=await signup(h),native={userId:'native-admin-identity',email:'owner@example.com',displayName:'Owner',fullName:'Owner'};
+ h.setNative(native);await h.store.accountFor(native);await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',native.userId,Date.now());
+ assert.equal((await (await h.route(req('/api/session'))).json()).admin,true);
+ assert.equal((await h.route(req('/admin',undefined,cookie))).status,403);
+ await h.store.run('UPDATE auth_sessions SET expires_at=0');
+ for(const token of [cookie,'__Host-tidysheet='+'b'.repeat(64),'__Host-tidysheet=not-a-session']){
+   assert.equal((await (await h.route(req('/api/session',undefined,token))).json()).user,null);
+   assert.equal((await h.route(req('/admin',undefined,token))).status,303);
+   assert.equal((await h.route(req('/api/admin/overview',undefined,token))).status,401);
+ }
+ const response=await h.route(req('/api/auth/logout',{},cookie));assert.equal((await response.json()).nativeSignOut,'/signout-with-chatgpt?return_to=%2Fchoose');
+});
+
+test('Explicit native sign-in clears the password identity through a same-origin POST and confines return targets',async()=>{
+ const h=harness(),{cookie}=await signup(h);h.env.TIDYSHEET_IDENTITY_MODE=undefined;
+ const response=await h.route(req('/auth/chatgpt?return_to=%2Fadmin',{},cookie));assert.equal(response.status,303);assert.equal(response.headers.get('Location'),'/signin-with-chatgpt?return_to=%2Fadmin');assert.match(response.headers.get('Set-Cookie'),/Max-Age=0/);assert.equal((await h.store.all('SELECT * FROM auth_sessions')).length,0);
+ const external=await h.route(req('/auth/chatgpt?return_to=https%3A%2F%2Fevil.example',{}));assert.equal(external.headers.get('Location'),'/signin-with-chatgpt?return_to=%2Fchoose');
+ const cross=new Request('https://example.com/auth/chatgpt',{method:'POST',headers:{Origin:'https://evil.example'}});assert.equal((await h.route(cross)).status,403);
+ h.env.TIDYSHEET_IDENTITY_MODE='disabled';assert.equal((await h.route(req('/auth/chatgpt',{}))).status,404);
+});
+
+test('Granted administrators retain access, with private cache headers and a bound browser authorization guard',async()=>{
+ const h=harness(),{cookie}=await signup(h),user=await grantAdmin(h,cookie);
+ for(const path of ['/admin','/admin/reviews']){const response=await h.route(req(path,undefined,cookie));assert.equal(response.status,200);assert.match(response.headers.get('Cache-Control'),/no-store/);assert.match(response.headers.get('Vary'),/Cookie/);const html=await response.text();assert.match(html,/admin-access.js\?v=4.11.0/);assert.ok(html.includes('name="tidysheet-admin-id" content="'+user.userId+'"'));assert.match(html,/admin-body admin-session-pending/);}
+ await h.store.run('DELETE FROM administrators');for(const path of ['/admin','/admin/reviews','/api/admin/overview','/api/admin/metrics?metric=visitors','/api/admin/reviews'])assert.equal((await h.route(req(path,undefined,cookie))).status,403,path);
+});
+
+test('Entering a sample rotates an admin into a restricted server session until password sign-in',async()=>{
+ const h=harness(),{cookie}=await signup(h);await grantAdmin(h,cookie);
+ assert.equal((await h.route(req('/admin',undefined,cookie))).status,200);
+ const response=await h.route(req('/choose?sample=1',undefined,cookie));assert.equal(response.status,200);assert.match(await response.text(),/Sample session: administrator access is disabled/);
+ const sample=response.headers.get('set-cookie').split(';')[0];assert.match(sample,/^__Host-tidysheet=sample\.[a-f0-9]{64}$/);
+ const session=await (await h.route(req('/api/session',undefined,sample))).json();assert.equal(session.user.sampleOnly,true);assert.equal(session.user.authSource,'password');assert.equal(session.admin,false);
+ for(const path of ['/admin','/admin/reviews','/api/admin/overview','/api/admin/metrics?metric=visitors','/api/admin/reviews'])assert.equal((await h.route(req(path,undefined,sample))).status,403,path);
+ for(const path of ['/choose','/sheet-cleaner.html?purpose=business'])assert.equal((await h.route(req(path,undefined,sample))).status,200,path);
+ assert.equal((await h.route(req('/api/admin/overview',undefined,cookie))).status,401,'previous administrator session is revoked');
+ const stripped=sample.replace('=sample.','=');assert.equal((await h.route(req('/api/admin/overview',undefined,stripped))).status,401,'scope is bound to the stored token hash');
+ assert.equal((await h.route(req('/choose?sample=1',undefined,sample))).headers.get('set-cookie'),null,'existing sample scope persists');
+ const login=await h.route(req('/api/auth/login',fixture,sample));assert.equal(login.status,200);const restored=login.headers.get('set-cookie').split(';')[0];assert.doesNotMatch(restored,/sample\./);
+ assert.equal((await h.route(req('/api/admin/overview',undefined,restored))).status,200);assert.equal((await h.route(req('/api/admin/overview',undefined,sample))).status,401);
+ assert.equal((await h.route(req('/admin?sample=1',undefined,restored))).status,403);assert.equal((await h.route(req('/api/admin/overview?sample=1',undefined,restored))).status,403);
+});
+
+test('Direct sample workspaces also restrict administrators, including native identities',async()=>{
+ for(const path of ['/sheet-cleaner.html?purpose=business&sample=1','/cleaner?purpose=business&sample=1','/training?purpose=training&sample=1']){
+   const h=harness(),native={userId:'native-sample-admin',email:'owner@example.com',displayName:'Owner',fullName:'Owner'};
+   h.setNative(native);await h.store.accountFor(native);await h.store.run('UPDATE accounts SET trial_ends=? WHERE id=?',Date.now()+86400000,native.userId);await h.store.run('INSERT INTO administrators (user_id,created_at) VALUES (?,?)',native.userId,Date.now());
+   const response=await h.route(req(path));assert.equal(response.status,200,path);const scoped=response.headers.get('set-cookie').split(';')[0];
+   const data=await (await h.route(req('/api/session',undefined,scoped))).json();assert.equal(data.admin,false);assert.equal(data.user.sampleOnly,true);assert.equal(data.user.authSource,'chatgpt');
+   assert.equal((await h.route(req('/admin',undefined,scoped))).status,403);assert.equal((await h.route(req('/api/admin/reviews',undefined,scoped))).status,403);
+ }
+});
+
+test('Workspace sample buttons use an authenticated same-origin scope change',async()=>{
+ const h=harness(),{cookie}=await signup(h);await grantAdmin(h,cookie);
+ assert.equal((await h.route(req('/api/auth/sample',{}))).status,401);
+ const cross=new Request('https://example.com/api/auth/sample',{method:'POST',headers:{Origin:'https://evil.example',cookie},body:'{}'});assert.equal((await h.route(cross)).status,403);
+ const response=await h.route(req('/api/auth/sample',{},cookie));assert.equal(response.status,200);const scoped=response.headers.get('set-cookie').split(';')[0];assert.match(scoped,/=sample\./);assert.equal((await h.route(req('/api/admin/overview',undefined,scoped))).status,403);
+ const html=await (await h.route(req('/sheet-cleaner.html?purpose=business',undefined,scoped))).text();assert.ok(html.indexOf('/assets/access.js')<html.indexOf('/assets/app.js'),'authentication initializes before automatic sample import');
+});

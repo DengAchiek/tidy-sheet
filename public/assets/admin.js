@@ -2,7 +2,7 @@
 (async () => {
   const { filterActivity, trafficCSV, activityLabels, metricInfo, metricTable } = await import('./admin-data.mjs?v=4.10.0');
   const $ = id => document.getElementById(id);
-  if (!$('adminRange')) return;
+  if (!$('adminRange') || !await window.TidyAdminAccess?.ready) return;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const number = value => Number(value || 0);
   const fmt = value => number(value).toLocaleString();
@@ -24,6 +24,7 @@
       const query = new URLSearchParams({ metric: detailState.metric, days: String(detailState.days), at: String(detailState.at), page: String(page) });
       const response = await fetch('/api/admin/metrics?' + query, { signal: detailController.signal, cache: 'no-store', credentials: 'same-origin' });
       const data = await response.json();
+      if(response.status===401||response.status===403){window.TidyAdminAccess.deny();return;}
       if (!response.ok) throw Error(data.message || 'Could not load report details.');
       if (id !== detailGeneration || !metricDialog.open) return;
       const report = metricTable(data);
@@ -178,6 +179,7 @@
     try {
       const response = await fetch('/api/admin/overview?days=' + days, { signal: controller.signal, cache: 'no-store', credentials: 'same-origin' });
       const data = await response.json();
+      if(response.status===401||response.status===403){window.TidyAdminAccess.deny();return;}
       if (!response.ok) throw Error(data.message || 'Could not load activity.');
       if (id === generation) render(data);
     } catch (error) {
@@ -209,6 +211,8 @@
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   });
   const interval = setInterval(() => { if ($('adminAutoRefresh').checked && !document.hidden && !busy && !metricDialog.open) load(); }, 60000);
-  window.addEventListener('pagehide', () => { clearInterval(interval); controller?.abort(); detailController?.abort(); }, { once: true });
+  const clearPrivateReport=()=>{generation++;detailGeneration++;snapshot=null;detailState=null;controller?.abort();detailController?.abort();clearInterval(interval);};
+  window.addEventListener('tidysheet-admin-lock',clearPrivateReport);
+  window.addEventListener('pagehide',clearPrivateReport,{once:true});
   load();
 })();

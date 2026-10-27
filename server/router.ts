@@ -1,11 +1,11 @@
-import {currentUser,isAdmin,requireAdmin,claimAdmin,issueAdminInvitation,inspectAdminInvitation,inspectAdminSetup,completeAdminSetup,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
+import {currentUser,isAdmin,requireAdmin,enterSample,hasNativeSession,beginNativeSignIn,claimAdmin,issueAdminInvitation,inspectAdminInvitation,inspectAdminSetup,completeAdminSetup,register,login,logout,changePassword,requestPasswordReset,inspectPasswordReset,resetPassword} from './auth';
 import {telemetry,authEvent,dashboard,metricDetails} from './analytics';
 import {submitReview,reviewInbox,updateReview} from './reviews';
 import {accountFor,subscriptionFor,first,all,run} from './store';
 import {AppError,sameOrigin,subscriptionAccess,publicSubscription,PLAN_CHOICES} from './policy.mjs';
 import {getPlans,displayPlan,billingMode,billingReady,initializeCheckout,portal,verifyCheckout,refreshSubscription,processWebhook} from './billing';
 import {landingPage,cleanerPage,privacyPage,signInPage,accountPage,choosePage,trainingPage,authPage,adminPage,adminReviewsPage,reviewsPage,adminAccessPage,adminRegistrationPage,adminSetupPage,securityPage,resetPasswordPage,esc} from './render';
-const secureHeaders={'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin','X-Frame-Options':'SAMEORIGIN'};
+const secureHeaders={'Cache-Control':'private, no-store, max-age=0, must-revalidate','Pragma':'no-cache','Expires':'0','Vary':'Cookie, oai-authenticated-user-id','X-Content-Type-Options':'nosniff','Referrer-Policy':'strict-origin-when-cross-origin','X-Frame-Options':'SAMEORIGIN'};
 const json=(value:any,status=200)=>Response.json(value,{status,headers:secureHeaders});
 const html=(body:string,status=200)=>new Response(body,{status,headers:{...secureHeaders,'Content-Type':'text/html; charset=utf-8'}});
 const redirect=(path:string)=>new Response(null,{status:303,headers:{...secureHeaders,Location:path}});
@@ -17,6 +17,22 @@ export async function handleRequest(request:Request):Promise<Response>{
   try{
     if(path==='/api/billing/webhook'&&request.method==='POST')return json(await processWebhook(request));
     if(request.method==='POST')sameOrigin(request);
+
+    // Deny by default across the entire admin namespace, including future routes.
+    // Public setup endpoints still require a one-use private token or owner secret.
+    const setupPage=request.method==='GET'&&['/admin/setup','/admin/register'].includes(path);
+    const setupAPI=request.method==='POST'&&['/api/admin/invitations/create','/api/admin/invitations/inspect','/api/admin/setup/inspect','/api/admin/setup','/api/admin/claim'].includes(path);
+    let adminUser:Awaited<ReturnType<typeof currentUser>>=null;
+    if((path==='/admin'||path.startsWith('/admin/'))&&!setupPage){
+      adminUser=await currentUser(request);
+      if(!adminUser)return redirect('/login?returnTo='+encodeURIComponent(path==='/admin/reviews'?path:'/admin'));
+      if(url.searchParams.get('sample')==='1'||!await isAdmin(adminUser))return html(adminAccessPage(adminUser),403);
+    }
+    if((path==='/api/admin'||path.startsWith('/api/admin/'))&&!setupAPI)adminUser=await requireAdmin(request);
+    if(request.method==='POST'&&path==='/auth/chatgpt'){
+      const result=await beginNativeSignIn(request),response=redirect(result.location);response.headers.set('Set-Cookie',result.setCookie);return response;
+    }
+
     if(path==='/api/cleaning/run'&&request.method==='POST'){
       const {user}=await userAccount(request);
       const {rateLimit}=await import('./auth');await rateLimit(request,'python-cleaning',user.userId,20);
@@ -32,7 +48,8 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='POST'&&path==='/api/auth/password-reset'){const result=await resetPassword(request,await readJSON(request)),response=json({reset:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
     if(request.method==='POST'&&['/api/auth/recover','/api/auth/recovery-email'].includes(path))return json({error:'recovery_codes_removed',message:'Saved recovery codes are no longer supported. Request a password reset email.'},410);
     if(request.method==='POST'&&path==='/api/auth/password'){const result=await changePassword(request,await readJSON(request)),response=json({changed:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
-    if(request.method==='POST'&&path==='/api/auth/logout'){const user=await currentUser(request),response=json({signedOut:true,nativeSignOut:user?.authSource==='chatgpt'?'/signout-with-chatgpt?return_to=%2Fchoose':null});response.headers.set('Set-Cookie',await logout(request));return response;}
+    if(request.method==='POST'&&path==='/api/auth/logout'){const response=json({signedOut:true,nativeSignOut:await hasNativeSession()?'/signout-with-chatgpt?return_to=%2Fchoose':null});response.headers.set('Set-Cookie',await logout(request));return response;}
+    if(request.method==='POST'&&path==='/api/auth/sample'){const {user}=await userAccount(request),scopedCookie=await enterSample(request,user),response=json({sample:true});if(scopedCookie)response.headers.set('Set-Cookie',scopedCookie);return response;}
     if(request.method==='POST'&&path==='/api/admin/invitations/create')return json(await issueAdminInvitation(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/invitations/inspect')return json(await inspectAdminInvitation(request,await readJSON(request)));
     if(request.method==='POST'&&path==='/api/admin/setup/inspect')return json(await inspectAdminSetup(request,await readJSON(request)));
@@ -43,26 +60,31 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='GET'&&path==='/account/security'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Faccount%2Fsecurity');return html(securityPage(user));}
     if(request.method==='GET'&&path==='/reset-password'){const response=html(resetPasswordPage());response.headers.set('Referrer-Policy','no-referrer');response.headers.set('X-Robots-Tag','noindex, nofollow');return response;}
     if(request.method==='GET'&&path==='/forgot-password')return html(authPage('recover',url.searchParams.get('returnTo')||'/choose'));
-    if(request.method==='GET'&&path==='/admin'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fadmin');if(!await isAdmin(user))return html(adminAccessPage(user),403);return html(adminPage(user));}
+    if(request.method==='GET'&&path==='/admin')return html(adminPage(adminUser));
     if(request.method==='GET'&&path==='/reviews')return html(reviewsPage(await currentUser(request)));
     if(request.method==='POST'&&path==='/api/reviews'){const {user}=await userAccount(request);return json(await submitReview(request,user,await readJSON(request)),201);}
-    if(request.method==='GET'&&path==='/admin/reviews'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fadmin%2Freviews');if(!await isAdmin(user))return html(adminAccessPage(user),403);return html(adminReviewsPage(user));}
-    if(request.method==='GET'&&path==='/api/admin/reviews'){await requireAdmin(request);return json(await reviewInbox(url.searchParams));}
-    if(request.method==='POST'&&path==='/api/admin/reviews/status'){await requireAdmin(request);return json(await updateReview(await readJSON(request)));}
+    if(request.method==='GET'&&path==='/admin/reviews')return html(adminReviewsPage(adminUser));
+    if(request.method==='GET'&&path==='/api/admin/reviews'){return json(await reviewInbox(url.searchParams));}
+    if(request.method==='POST'&&path==='/api/admin/reviews/status'){return json(await updateReview(await readJSON(request)));}
     if(request.method==='POST'&&path==='/api/admin/claim')return json(await claimAdmin(request,await readJSON(request)));
-    if(request.method==='GET'&&path==='/api/admin/metrics'){await requireAdmin(request);return json(await metricDetails(url.searchParams));}
-    if(request.method==='GET'&&path==='/api/admin/overview'){await requireAdmin(request);return json(await dashboard(Number(url.searchParams.get('days')||30)));}
+    if(request.method==='GET'&&path==='/api/admin/metrics'){return json(await metricDetails(url.searchParams));}
+    if(request.method==='GET'&&path==='/api/admin/overview'){return json(await dashboard(Number(url.searchParams.get('days')||30)));}
     if(request.method==='POST'&&path==='/api/telemetry'){const result=await telemetry(request,await readJSON(request),await currentUser(request)),response=json({recorded:true});response.headers.set('Set-Cookie',result.setCookie);return response;}
 
     if(request.method==='GET'&&['/','/index.html'].includes(path))return html(landingPage(await currentUser(request),[]));
-    if(request.method==='GET'&&path==='/choose'){const user=await currentUser(request);if(!user)return redirect('/login?returnTo='+encodeURIComponent('/choose'+(url.searchParams.get('sample')==='1'?'?sample=1':'')));return html(choosePage(user,url.searchParams.get('sample')==='1'));}
+    if(request.method==='GET'&&path==='/choose'){
+      const user=await currentUser(request),sample=url.searchParams.get('sample')==='1';
+      if(!user)return redirect('/login?returnTo='+encodeURIComponent('/choose'+(sample?'?sample=1':'')));
+      const scopedCookie=sample?await enterSample(request,user):null,response=html(choosePage(sample?{...user,sampleOnly:true}:user,sample));
+      if(scopedCookie)response.headers.set('Set-Cookie',scopedCookie);return response;
+    }
     if(request.method==='GET'&&path==='/training'){
       const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fchoose');if(url.searchParams.get('purpose')!=='training')return redirect('/choose');const account=await accountFor(user),sub=await subscriptionFor(user.userId),access=subscriptionAccess(account,sub,Date.now(),billingMode());
-      if(!access.training)return redirect('/account?access=training');return html(trainingPage(user,access));
+      if(!access.training)return redirect('/account?access=training');const scopedCookie=url.searchParams.get('sample')==='1'?await enterSample(request,user):null,response=html(trainingPage(user,access));if(scopedCookie)response.headers.set('Set-Cookie',scopedCookie);return response;
     }
     if(request.method==='GET'&&path==='/privacy.html')return html(privacyPage(await currentUser(request)));
     if(request.method==='GET'&&['/cleaner','/sheet-cleaner.html'].includes(path)){
-      const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fchoose');if(url.searchParams.get('purpose')!=='business')return redirect('/choose'+(url.searchParams.get('sample')==='1'?'?sample=1':''));return html(cleanerPage(user,{allowed:true,business:true,training:false,source:'account'},false));
+      const user=await currentUser(request);if(!user)return redirect('/login?returnTo=%2Fchoose');if(url.searchParams.get('purpose')!=='business')return redirect('/choose'+(url.searchParams.get('sample')==='1'?'?sample=1':''));const scopedCookie=url.searchParams.get('sample')==='1'?await enterSample(request,user):null,response=html(cleanerPage(user,{allowed:true,business:true,training:false,source:'account'},false));if(scopedCookie)response.headers.set('Set-Cookie',scopedCookie);return response;
     }
     if(request.method==='GET'&&path==='/account'){
       const user=await currentUser(request),{plans,notice:planNotice}=await safePlans();
@@ -80,7 +102,7 @@ export async function handleRequest(request:Request):Promise<Response>{
     if(request.method==='GET'&&path==='/api/session'){
       const user=await currentUser(request);if(!user)return json({user:null,access:{allowed:false,source:'none'}});
       const account=await accountFor(user),sub=await subscriptionFor(user.userId);
-      return json({user:{id:user.userId,name:user.displayName,email:user.email,authSource:user.authSource},admin:await isAdmin(user),access:{...subscriptionAccess(account,sub,Date.now(),billingMode()),business:true,allowed:true},subscription:publicSubscription(sub)});
+      return json({user:{id:user.userId,name:user.displayName,email:user.email,authSource:user.authSource,sampleOnly:!!user.sampleOnly},admin:await isAdmin(user),access:{...subscriptionAccess(account,sub,Date.now(),billingMode()),business:true,allowed:true},subscription:publicSubscription(sub)});
     }
     if(request.method==='GET'&&path==='/api/plans'){const plans=await getPlans();return json({plans:plans.map((p,i)=>displayPlan(p,PLAN_CHOICES[i]))});}
     if(request.method==='POST'&&path==='/api/billing/checkout'){const {account}=await userAccount(request),body=await readJSON(request);if(!PLAN_CHOICES.includes(body.cycle))throw new AppError(400,'invalid_cycle','Choose monthly or annual billing.');return json(await initializeCheckout(account,body.cycle));}
